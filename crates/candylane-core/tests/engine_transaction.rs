@@ -43,6 +43,7 @@ use candylane_core::Result;
 #[derive(Clone)]
 struct OpRow {
     id: i64,
+    kind: OpKind,
     status: OpStatus,
 }
 
@@ -113,7 +114,7 @@ impl FakeStore {
 impl StateStore for FakeStore {
     fn begin_op(
         &mut self,
-        _kind: OpKind,
+        kind: OpKind,
         _profile: Option<&str>,
         _profile_hash: Option<&str>,
         _parent: Option<i64>,
@@ -122,6 +123,7 @@ impl StateStore for FakeStore {
         self.next_op_id += 1;
         self.ops.push(OpRow {
             id,
+            kind,
             status: OpStatus::Pending,
         });
         Ok(id)
@@ -197,7 +199,7 @@ impl StateStore for FakeStore {
             .filter(|a| a.op_id == op && a.status == ActionStatus::Applied)
             .collect();
         // Descending seq (revert order).
-        rows.sort_by(|a, b| b.seq.cmp(&a.seq));
+        rows.sort_by_key(|a| std::cmp::Reverse(a.seq));
         Ok(rows.iter().map(|a| a.to_recorded()).collect())
     }
 
@@ -231,6 +233,22 @@ impl StateStore for FakeStore {
             .find(|o| o.status == OpStatus::Applied)
             .map(|o| o.id))
     }
+
+    fn list_operations(&self) -> Result<Vec<OperationRow>> {
+        Ok(self
+            .ops
+            .iter()
+            .rev()
+            .map(|o| OperationRow {
+                id: o.id,
+                kind: o.kind,
+                profile: None,
+                status: o.status,
+                started_at: String::new(),
+                finished_at: None,
+            })
+            .collect())
+    }
 }
 
 // ============================================================================
@@ -247,6 +265,8 @@ struct TargetScript {
     apply_outcomes: RefCell<std::collections::VecDeque<Result<Applied>>>,
     /// Successive undo() outcomes.
     undo_outcomes: RefCell<std::collections::VecDeque<Result<()>>>,
+    /// Successive synthesize_undo() outcomes (crash-reconcile applied path).
+    synthesize_outcomes: RefCell<std::collections::VecDeque<Result<Applied>>>,
 }
 
 impl TargetScript {
@@ -256,6 +276,7 @@ impl TargetScript {
             plan_decisions: RefCell::new(std::collections::VecDeque::new()),
             apply_outcomes: RefCell::new(std::collections::VecDeque::new()),
             undo_outcomes: RefCell::new(std::collections::VecDeque::new()),
+            synthesize_outcomes: RefCell::new(std::collections::VecDeque::new()),
         }
     }
 }
@@ -316,6 +337,16 @@ impl FakeHandler {
             .push_back(result);
     }
 
+    fn push_synthesize(&self, target: &str, result: Result<Applied>) {
+        let mut scripts = self.scripts.borrow_mut();
+        scripts
+            .entry(target.to_owned())
+            .or_insert_with(TargetScript::new)
+            .synthesize_outcomes
+            .borrow_mut()
+            .push_back(result);
+    }
+
     /// Return a clone of the call log for assertions.
     fn calls(&self) -> Vec<(String, String)> {
         self.call_log.borrow().clone()
@@ -358,6 +389,7 @@ impl Handler for FakeHandler {
                 target: Target(key.clone()),
                 before: serde_json::json!({ "installed": false }),
                 undo_kind: UndoKind::BestEffort,
+                payload: Json::Null,
             })),
         }
     }
@@ -392,6 +424,24 @@ impl Handler for FakeHandler {
             Some(r) => r,
             // Default: succeed.
             None => Ok(()),
+        }
+    }
+
+    fn synthesize_undo(&self, target: &Target, _before: &Json, probe: &Probe) -> Result<Applied> {
+        let key = target.0.clone();
+        self.call_log
+            .borrow_mut()
+            .push(("synthesize_undo".into(), key.clone()));
+        let mut scripts = self.scripts.borrow_mut();
+        let entry = scripts.entry(key.clone()).or_insert_with(TargetScript::new);
+        let popped = entry.synthesize_outcomes.borrow_mut().pop_front();
+        match popped {
+            Some(r) => r,
+            // Default: rebuild the undo recipe from the observed post-crash state.
+            None => Ok(Applied {
+                after: probe.0.clone(),
+                undo: serde_json::json!({ "op": "uninstall", "pkg": key }),
+            }),
         }
     }
 }
@@ -664,14 +714,12 @@ fn pull_action_k_fails() {
 
 /// Sub-test A: the in-flight pending action's probe returns a state DIFFERENT from
 /// `before` (apply had taken effect before the crash).  After recover() the action
-/// should be reconciled to Applied, then immediately Reverted; the op ends Reverted.
+/// is reconciled to Applied (via `synthesize_undo`), then immediately Reverted by
+/// rollback; the op ends Reverted.
 ///
-/// NOTE: this path currently hits a `todo!()` inside `engine::reconcile` at the
-/// `real != before` branch (it calls `handler.synthesize_undo` which does not yet
-/// exist on the Handler trait).  The test is marked `#[should_panic]` until
-/// `synthesize_undo` is added.  See module-level note #2.
+/// This is CRITICAL #4: the crashed-mid-apply action is NOT stranded — reconcile
+/// promotes it to Applied with a synthesized undo recipe so rollback can reverse it.
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn recover_reconciles_inflight_applied_path() {
     let handler = FakeHandler::new(HandlerKind::Winget);
     let mut store = FakeStore::new();
@@ -681,7 +729,7 @@ fn recover_reconciles_inflight_applied_path() {
     let op_id = store
         .begin_op(OpKind::Pull, Some("test"), Some("h"), None)
         .unwrap();
-    let _action_id = store
+    let action_id = store
         .insert_action(
             op_id,
             0,
@@ -695,19 +743,57 @@ fn recover_reconciles_inflight_applied_path() {
         )
         .unwrap();
 
-    // probe() will return a state that differs from before (installed=true).
+    // probe() will return a state that differs from before (installed=true), so
+    // reconcile takes the applied path and calls synthesize_undo.
     handler.push_probe(
         "pkg-crash",
         Ok(Probe(
             serde_json::json!({ "installed": true, "version": "1.0" }),
         )),
     );
+    // synthesize_undo rebuilds the recipe from the observed post-crash state.
+    handler.push_synthesize(
+        "pkg-crash",
+        Ok(Applied {
+            after: serde_json::json!({ "installed": true, "version": "1.0" }),
+            undo: serde_json::json!({ "op": "uninstall", "pkg": "pkg-crash" }),
+        }),
+    );
+    // rollback's undo() succeeds (default Ok).
 
     let registry = FakeRegistry::new(&handler);
     let mut eng = make_engine(&mut store, &registry);
 
-    // This will panic at the todo!() inside reconcile.
     eng.recover().unwrap();
+
+    // The in-flight action was promoted to Applied, then rolled back → Reverted.
+    assert_eq!(
+        store.action(action_id).unwrap().status,
+        ActionStatus::Reverted,
+        "reconcile must promote the crashed action to Applied so rollback can revert it"
+    );
+
+    // The synthesized undo recipe was recorded on the action before rollback.
+    assert_eq!(
+        store.action(action_id).unwrap().undo,
+        serde_json::json!({ "op": "uninstall", "pkg": "pkg-crash" }),
+        "synthesize_undo recipe must be persisted via set_action_applied"
+    );
+
+    // Op ends Reverted (the single action reverted cleanly).
+    assert_eq!(
+        store.op(op_id).unwrap().status,
+        OpStatus::Reverted,
+        "op should be Reverted after a clean reconcile + rollback"
+    );
+
+    // Call order: probe (reconcile), then synthesize_undo (applied path), then undo (rollback).
+    let methods: Vec<String> = handler.calls().into_iter().map(|(m, _)| m).collect();
+    assert_eq!(
+        methods,
+        vec!["probe", "synthesize_undo", "undo"],
+        "reconcile must probe + synthesize before rollback undoes the action"
+    );
 }
 
 /// Sub-test B: the in-flight pending action's probe returns a state EQUAL to `before`

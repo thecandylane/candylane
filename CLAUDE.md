@@ -10,28 +10,32 @@ Stack: Rust workspace targeting `x86_64-pc-windows-msvc`. Wraps winget/scoop; do
 reinvent package management.
 
 Read before non-trivial work:
-- [MANIFESTO.md](./MANIFESTO.md) — values. Every tradeoff is measured against it.
-- [PHASE1_ARCHITECTURE.md](./PHASE1_ARCHITECTURE.md) — the locked Phase 1 design. **Source of truth for current work.**
-- [ROADMAP.md](./ROADMAP.md) — the 12-phase spine (stop at any Era, still worth having).
-- [REFERENCES.md](./REFERENCES.md) — what to steal from, per subsystem. Point coding agents at *specific files* in those repos, not abstract descriptions.
-- [VOCABULARY.md](./VOCABULARY.md) — the sweet-shop lexicon (box ⊃ tin ⊃ biscuit, lanes, jar, chimney). User-facing names ↔ code names.
+- [MANIFESTO.md](./docs/MANIFESTO.md) — values. Every tradeoff is measured against it.
+- [PHASE1_ARCHITECTURE.md](./docs/PHASE1_ARCHITECTURE.md) — the locked Phase 1 design. **Source of truth for current work.**
+- [ROADMAP.md](./docs/ROADMAP.md) — the 12-phase spine (stop at any Era, still worth having).
+- [REFERENCES.md](./docs/REFERENCES.md) — what to steal from, per subsystem. Point coding agents at *specific files* in those repos, not abstract descriptions.
+- [VOCABULARY.md](./docs/VOCABULARY.md) — the sweet-shop lexicon (box ⊃ tin ⊃ biscuit, lanes, jar, chimney). User-facing names ↔ code names.
 
 ## Current state
-Pre-alpha. **Phase 1 — the keystone. Milestone 2 reached: the transaction engine compiles and is
-proven.** `cargo check` + `clippy -D warnings` clean, **13/13 tests green** on Rust 1.96.0 (Linux).
+Pre-alpha. **Phase 1 — the keystone. The cross-platform half of the vertical slice is built and
+proven on Linux.** `cargo test` **52 green**, `clippy -D warnings` + `fmt` clean on Rust 1.96.0.
 
-Built + tested: the state engine ([engine.rs](./crates/candylane-core/src/engine.rs)), `SqliteStore`
-([store.rs](./crates/candylane-core/src/store.rs)), the profile parser
-([profile.rs](./crates/candylane-core/src/profile.rs)), the `Handler`/`StateStore`/`WingetExecutor`
-contracts, the schema, CI, `deny.toml`. Engine tests run against fakes (`FakeStore`/`FakeHandler`),
-so the orchestration logic (pull / rollback / reconcile-skipped / bounded-rollback / idempotency) is
-verified — but against fakes, not real I/O.
+Built + tested end-to-end (real I/O, no fakes): `candylane pull` → `revert` against a dotfile +
+script profile — [tests/vertical_slice.rs](./crates/candylane-core/tests/vertical_slice.rs) proves
+both undo paths (delete + sha256-verified restore) leave the box functional-clean. In place: the
+state engine ([engine.rs](./crates/candylane-core/src/engine.rs)), `SqliteStore` + round-trip test
+([store.rs](./crates/candylane-core/src/store.rs)), the **DotfileHandler** (copy-manage, CRITICAL #2)
+and **ScriptHandler** (timeout group-kill, CRITICAL #1) in
+[handlers/](./crates/candylane-core/src/handlers/), the `HandlerRegistry`
+([registry.rs](./crates/candylane-core/src/registry.rs)), `synthesize_undo` (the crash-reconcile
+leaf), the profile parser, schema, and CI. CLI `pull`/`revert`/`diff`/`recover` are wired.
 
-Still stubbed (`todo!()`): the three real handlers (winget/dotfile/script — Lanes B/C/D), a
-`SqliteStore` round-trip test (the DB layer compiles but isn't exercised yet), `synthesize_undo`
-(reconcile applied-path; its test is `#[should_panic]`), crypto ACL (Lane E), `preflight`/
-`reboot_pending`, and the CLI command bodies (Lane F). Next Linux-runnable target: the dotfile +
-script handlers + a real `pull`/`revert` vertical slice (winget waits for Windows).
+Still stubbed / Windows-only: **WingetHandler** (Lane B — `todo!()`, needs a Windows host), the
+**crypto owner-only ACL** (Lane E / CRITICAL #3 — `windows-acl` carve-out `todo!()`; unix is a 0600
+fallback), engine `preflight`/`reboot_pending` (Windows real impl `todo!()`; unix cfg-gated to
+no-op), and CLI `history`/`status`. The keystone **Hyper-V 10x clean-VM loop is not built** — the
+Linux half is proven, the Windows acceptance bar is not. **All known gaps + review follow-ups are
+tracked in [FOLLOWUPS.md](./docs/FOLLOWUPS.md).**
 
 ## The prime directive
 Phase 1 must be **surgical**. The acceptance bar, non-negotiable:
@@ -54,7 +58,7 @@ recipes in reverse. **Success is read from `probe()`, never from a subprocess ex
 
 Keystone code: [engine.rs](./crates/candylane-core/src/engine.rs) — `reconcile()` → `rollback()` →
 `finalize_op()`. Treat it as load-bearing; it encodes the bugs three reviewers found. Full detail
-in [PHASE1_ARCHITECTURE.md](./PHASE1_ARCHITECTURE.md).
+in [PHASE1_ARCHITECTURE.md](./docs/PHASE1_ARCHITECTURE.md).
 
 ### The CRITICALs (always designed in, never discovered)
 1. **Script timeout** — `ScriptHandler` kills the child on `ApplyCtx.timeout`.
@@ -79,10 +83,10 @@ Framework: **Rust built-in test harness (`cargo test`)**.
 ```bash
 cargo test --workspace                       # unit + integration
 ```
-Goal: 100% coverage of handlers + engine. Case list lives in [PHASE1_ARCHITECTURE.md](./PHASE1_ARCHITECTURE.md)
-(Test spec: ~32 unit + 5 E2E). Handlers are unit-tested off-Windows via the `WingetExecutor` seam
-(inject a fake). The keystone E2E is the Hyper-V 10x loop (`Checkpoint-VM`/`Restore-VMSnapshot`),
-Windows-host only.
+Goal: 100% coverage of handlers + engine. Case list lives in [PHASE1_ARCHITECTURE.md](./docs/PHASE1_ARCHITECTURE.md)
+(**52 unit/integration tests green on Linux today**; the Hyper-V E2E loop is still to come). Handlers
+are unit-tested off-Windows; winget will use the `WingetExecutor` seam (inject a fake). The keystone
+E2E is the Hyper-V 10x loop (`Checkpoint-VM`/`Restore-VMSnapshot`), Windows-host only.
 
 ## Hard rules
 - **Reversibility honesty.** Tag every action `inverse | best_effort | one_way | noop`. winget is
@@ -128,11 +132,13 @@ rustfmt + clippy clean (`-D warnings`), edition 2021. Explicit over clever. DRY 
 Errors via `anyhow` now → `thiserror` taxonomy as it settles. ASCII diagrams in comments for state
 machines and multi-step pipelines (engine, handlers); keep them current — stale diagrams mislead.
 
-**Naming ([VOCABULARY.md](./VOCABULARY.md)):** user-facing "box" = the code `Profile` struct
+**Naming ([VOCABULARY.md](./docs/VOCABULARY.md)):** user-facing "box" = the code `Profile` struct
 (never `Box` — std conflict). "chimney" = the secrets subsystem (can be the real module name).
 Theme nouns in UX/docs; keep verbs and security primitives plain in code and CLI.
 
 ## Not yet wired (don't assume)
 The distribution pipeline (GitHub Releases + signed installer, rustup-init model), the Hyper-V
-clean-VM E2E harness, the real handlers, and the crypto ACL. (CI, SECURITY/THREAT_MODEL, a pinned
-1.96.0 toolchain, and a green build/test are now in place.)
+clean-VM E2E harness, the **WingetHandler** (Lane B), and the **crypto owner-only ACL** (Lane E) —
+the last two Windows-only and still `todo!()`. (CI, SECURITY/THREAT_MODEL, a pinned 1.96.0 toolchain,
+the dotfile + script handlers, a wired CLI, and a green build/test on Linux are now in place.) The
+running gap list lives in [FOLLOWUPS.md](./docs/FOLLOWUPS.md) — keep it current.

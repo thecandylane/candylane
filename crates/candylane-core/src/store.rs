@@ -56,6 +56,9 @@ pub trait StateStore {
 
     /// The most recent successfully-applied pull (revert target).
     fn last_applied_op(&self) -> Result<Option<i64>>;
+
+    /// All operations, newest first (for `history`).
+    fn list_operations(&self) -> Result<Vec<OperationRow>>;
 }
 
 // ---- enum <-> TEXT helpers -------------------------------------------------
@@ -79,6 +82,27 @@ fn op_status_to_str(s: OpStatus) -> &'static str {
     }
 }
 
+fn op_kind_from_str(s: &str) -> Result<OpKind> {
+    match s {
+        "pull" => Ok(OpKind::Pull),
+        "revert" => Ok(OpKind::Revert),
+        "recover" => Ok(OpKind::Recover),
+        other => anyhow::bail!("unknown op kind in DB: {:?}", other),
+    }
+}
+
+fn op_status_from_str(s: &str) -> Result<OpStatus> {
+    match s {
+        "pending" => Ok(OpStatus::Pending),
+        "applied" => Ok(OpStatus::Applied),
+        "failed" => Ok(OpStatus::Failed),
+        "reverted" => Ok(OpStatus::Reverted),
+        "partially_reverted" => Ok(OpStatus::PartiallyReverted),
+        "revert_failed" => Ok(OpStatus::RevertFailed),
+        other => anyhow::bail!("unknown op status in DB: {:?}", other),
+    }
+}
+
 fn action_status_to_str(s: ActionStatus) -> &'static str {
     match s {
         ActionStatus::Pending => "pending",
@@ -87,6 +111,7 @@ fn action_status_to_str(s: ActionStatus) -> &'static str {
         ActionStatus::Reverted => "reverted",
         ActionStatus::Skipped => "skipped",
         ActionStatus::UndoFailed => "undo_failed",
+        ActionStatus::UndoSkipped => "undo_skipped",
     }
 }
 
@@ -98,6 +123,7 @@ fn action_status_from_str(s: &str) -> Result<ActionStatus> {
         "reverted" => Ok(ActionStatus::Reverted),
         "skipped" => Ok(ActionStatus::Skipped),
         "undo_failed" => Ok(ActionStatus::UndoFailed),
+        "undo_skipped" => Ok(ActionStatus::UndoSkipped),
         other => anyhow::bail!("unknown action status in DB: {:?}", other),
     }
 }
@@ -416,5 +442,35 @@ impl StateStore for SqliteStore {
             )
             .optional()?;
         Ok(id)
+    }
+
+    fn list_operations(&self) -> Result<Vec<OperationRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, profile, status, started_at, finished_at
+             FROM operations ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let kind_str: String = row.get(1)?;
+            let profile: Option<String> = row.get(2)?;
+            let status_str: String = row.get(3)?;
+            let started_at: String = row.get(4)?;
+            let finished_at: Option<String> = row.get(5)?;
+            let kind = op_kind_from_str(&kind_str).map_err(|e| {
+                rusqlite::Error::InvalidColumnType(1, format!("{}", e), rusqlite::types::Type::Text)
+            })?;
+            let status = op_status_from_str(&status_str).map_err(|e| {
+                rusqlite::Error::InvalidColumnType(3, format!("{}", e), rusqlite::types::Type::Text)
+            })?;
+            Ok(OperationRow {
+                id,
+                kind,
+                profile,
+                status,
+                started_at,
+                finished_at,
+            })
+        })?;
+        rows.map(|r| r.map_err(anyhow::Error::from)).collect()
     }
 }

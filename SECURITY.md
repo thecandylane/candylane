@@ -3,7 +3,7 @@
 Candylane is a tool that, by design, reconfigures your whole machine and runs code with
 elevated privileges. We take that responsibility seriously. This document covers how to
 report issues and what our security posture is. For the full analysis of assets,
-adversaries, and mitigations, see [THREAT_MODEL.md](./THREAT_MODEL.md).
+adversaries, and mitigations, see [THREAT_MODEL.md](./docs/THREAT_MODEL.md).
 
 ## Status: pre-alpha — read this first
 
@@ -101,4 +101,4 @@ Known-bad biscuits are subject to a registry kill-switch (Phase 8).
 Candylane touches every machine you own. That is exactly why it must never become an attack
 vector. The state DB, the chimney, and the identity key are owner-only. The self-update path
 verifies signatures against a pinned key before swapping the binary. We hold this without
-exception — see [MANIFESTO.md](./MANIFESTO.md).
+exception — see [MANIFESTO.md](./docs/MANIFESTO.md).

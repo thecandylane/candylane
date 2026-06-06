@@ -16,5 +16,11 @@ fs2.workspace = true
 time.workspace = true
 toml = "0.8"
 
+# ScriptHandler (Lane D) uses libc::setsid / kill / SIGKILL for the CRITICAL #1
+# process-group timeout-kill. Unix-only; the Windows path is compiled out.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Handlers are unit-tested off-Windows via the WingetExecutor seam.
+tempfile = "3"

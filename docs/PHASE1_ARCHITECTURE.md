@@ -5,10 +5,27 @@
 > zero breaks** ([ROADMAP.md](./ROADMAP.md) Phase 1). Everything here is decided.
 > Implementation maps field-for-field and signature-for-signature to what follows.
 
-**Status (2026-06-06):** Lane A landed. The engine, `SqliteStore`, profile parser, schema, and CI
-compile and pass `cargo check` + `clippy -D warnings` + 13 tests on Rust 1.96.0. The engine's
-transaction logic is proven against fakes. Real handlers (winget/dotfile/script), `synthesize_undo`,
-the crypto ACL, and the CLI bodies remain. See [LANE_A_STATUS.md](./LANE_A_STATUS.md).
+**Status (2026-06-06):** The cross-platform vertical slice is built and proven on Linux. Engine,
+`SqliteStore` (+ round-trip test), profile parser, **DotfileHandler** (CRITICAL #2), **ScriptHandler**
+(CRITICAL #1), `HandlerRegistry`, `synthesize_undo`, schema, CI, and a wired CLI
+(`pull`/`revert`/`diff`/`recover`) compile and pass `cargo test` (**52 green**) + `clippy -D warnings`
++ `fmt` on Rust 1.96.0. [`tests/vertical_slice.rs`](../crates/candylane-core/tests/vertical_slice.rs)
+proves `pull` → `revert` → functional-clean (delete + sha256-verified restore) with real handlers and
+the real store. Remaining: **WingetHandler** (Lane B, Windows), the crypto owner-only ACL (Lane E,
+Windows), Windows `preflight`/`reboot_pending`, CLI `history`/`status`, and the Hyper-V 10x loop.
+Known gaps + review follow-ups: [FOLLOWUPS.md](./FOLLOWUPS.md).
+
+**Implementation deltas vs this spec (recorded during the slice):**
+- `PlannedAction` gained a `payload: Json` field — `apply()` receives only the `PlannedAction`, not the
+  `Item`, so `plan()` stashes handler-specific desired state (dotfile src+sha, script run+undo) there.
+- `Handler::synthesize_undo(&self, target, before, probe) -> Result<Applied>` is now a **required**
+  trait method (the crash-reconcile leaf), not a TODO. Scripts bail by design (null probe state).
+- `ActionStatus::UndoSkipped` added: a `one_way` action that rollback reaches is recorded
+  `undo_skipped`, never `reverted` — honesty (status never claims a reversal that didn't happen).
+- Exact `before`/`undo` JSON shapes are the doc-comments in `handlers/dotfile.rs` / `handlers/script.rs`
+  — **those are the source of truth**; the shapes sketched below are indicative (e.g. script `before`
+  is `null`; dotfile keys are `exists`/`sha256`, not `existed`).
+- DotfileHandler rejects `..` traversal and unsupported leading variables in targets (THREAT_MODEL T14).
 
 **v2 changelog (three independent reviews — Claude subagent, Grok, +1 — converged on the
 revert/recover path):** in-flight reconcile after crash; winget success sourced from
@@ -106,7 +123,7 @@ CREATE TABLE actions (
     target        TEXT NOT NULL,
     status        TEXT NOT NULL CHECK (status IN
                     ('pending','applied','failed','reverted','skipped',
-                     'undo_failed')),                -- v2: undo gave up after N attempts
+                     'undo_failed','undo_skipped')), -- v2: undo_failed (gave up); v2.1: undo_skipped (one_way)
     before_json   TEXT NOT NULL,
     after_json    TEXT,
     undo_kind     TEXT NOT NULL CHECK (undo_kind IN
@@ -166,6 +183,12 @@ pub trait Handler {
     /// MUST be idempotent. For best_effort actions, verify ownership before
     /// destroying state (don't uninstall a package the user manually upgraded).
     fn undo(&self, action: &RecordedAction, ctx: &ApplyCtx) -> Result<()>;
+
+    /// Crash-reconcile leaf (CRITICAL #4). When `recover` finds an in-flight action whose
+    /// probe != before (apply took effect before the crash), rebuild (after, undo) from the
+    /// pre-state + observed probe so rollback can reverse it. Scripts have null probe state
+    /// and bail here by design (unreachable in practice).
+    fn synthesize_undo(&self, target: &Target, before: &Json, probe: &Probe) -> Result<Applied>;
 }
 
 /// Subprocess seam so winget logic is unit-testable off-Windows (Finding #12).
@@ -178,7 +201,7 @@ pub trait WingetExecutor: Send + Sync {
 
 pub enum HandlerKind   { Winget, Dotfile, Script }
 pub enum UndoKind      { Inverse, BestEffort, OneWay, Noop }   // v2: BestEffort
-pub enum ActionStatus  { Pending, Applied, Failed, Reverted, Skipped, UndoFailed } // v2: UndoFailed
+pub enum ActionStatus  { Pending, Applied, Failed, Reverted, Skipped, UndoFailed, UndoSkipped } // v2: UndoFailed; v2.1: UndoSkipped (one_way honesty)
 pub enum OpStatus      { Pending, Applied, Failed, Reverted, PartiallyReverted, RevertFailed }
 
 pub struct ApplyCtx<'a> {
@@ -266,7 +289,7 @@ run  = "./scripts/example-tweak.ps1"
 undo = "./scripts/example-tweak.undo.ps1"   # REQUIRED (certified profile: zero one_way)
 ```
 
-## Test spec (write alongside each handler — ~32 unit + 5 E2E)
+## Test spec (write alongside each handler — ~32 unit + 5 E2E; **52 unit/integration green on Linux today**, Hyper-V E2E still to come)
 
 ```
 winget   apply: already-installed→skip · ok→best_effort undo

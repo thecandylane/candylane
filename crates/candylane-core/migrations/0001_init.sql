@@ -32,7 +32,7 @@ CREATE TABLE actions (
     handler       TEXT NOT NULL CHECK (handler IN ('winget','dotfile','script')),
     target        TEXT NOT NULL,
     status        TEXT NOT NULL CHECK (status IN
-                    ('pending','applied','failed','reverted','skipped','undo_failed')),
+                    ('pending','applied','failed','reverted','skipped','undo_failed','undo_skipped')),
     before_json   TEXT NOT NULL,
     after_json    TEXT,
     undo_kind     TEXT NOT NULL CHECK (undo_kind IN ('inverse','best_effort','one_way','noop')),

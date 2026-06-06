@@ -7,7 +7,8 @@
 //! Decision #8 (windows-rs carve-out): the ONLY place a Windows-API dependency is
 //! allowed in Phase 1 is `enforce_owner_only` / `assert_owner_only` below.
 //!
-//! SCAFFOLD: not compiled (no toolchain on the dev host). The ACL calls are sketched.
+//! Identity generate/load/sign/verify compile and run; the owner-only ACL is enforced
+//! on unix (0600) and is still a `todo!()` on Windows (the `windows-acl` carve-out — Lane E).
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

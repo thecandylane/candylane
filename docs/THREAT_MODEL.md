@@ -91,9 +91,9 @@ Status legend: ✅ designed in Phase 1 · 🔜 planned (phase noted) · ⚠️ a
 | T9 | Install bootstrap (`iwr \| iex`) MITM'd or spoofed | Tampering | ADV-2 | Prefer signed installer (rustup-init model); publish checksums; TLS; document the risk loudly | 🔜 P0/P1.5 ⚠️ |
 | T10 | Our registry/pipeline compromised, ships bad biscuits/releases | Tampering | ADV-5 | Reproducible builds; signed releases; `cargo-audit`/`cargo-deny`; registry kill-switch; federation/mirroring | 🔜 P0/P8 |
 | T11 | Stolen USB hamper → full setup + secrets | Info disclosure | ADV-4 | `.candy` age-encrypted to the hardware key; optional expiry; secrets unusable without the key | 🔜 P7 ⚠️ |
-| T12 | Crash mid-pull leaves a half-configured, non-reversible machine | Tampering (integrity) | ADV-6/env | Intent-before-apply, in-flight **reconcile** on recover, bounded best-effort rollback (CRITICALs #4/#5) | ✅ (design) |
+| T12 | Crash mid-pull leaves a half-configured, non-reversible machine | Tampering (integrity) | ADV-6/env | Intent-before-apply, in-flight **reconcile** on recover, bounded best-effort rollback (CRITICALs #4/#5) | ✅ design + engine tests (Linux); real-store recover test pending (F11) |
 | T13 | A biscuit's recipe lies about what it does | Spoofing/Repud. | ADV-1 | Recipe is machine-checkable where possible; diff shows real effects; reputation + kill-switch; signed provenance for repudiation | 🔜 P8 |
-| T14 | Path traversal / command injection in a handler | Tampering/Elev | ADV-1 | Validate targets; no shell string interpolation; pass args as arrays; `WingetExecutor` seam keeps subprocess construction in one audited place | 🔜 P1 (handlers) |
+| T14 | Path traversal / command injection in a handler | Tampering/Elev | ADV-1 | DotfileHandler rejects `..` traversal + unsupported leading vars at plan time; ScriptHandler runs author-supplied commands **by design** (the trust boundary is the profile — see T6, P8 signing); winget arg-array + `WingetExecutor` seam pending | 🟡 partial — dotfile guarded (P1); winget pending (Lane B) |
 
 ## Accepted residual risks (the honest part)
 

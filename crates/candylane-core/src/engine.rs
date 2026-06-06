@@ -4,10 +4,11 @@
 //!   pull     — intent-before-apply; success is read from probe (inside apply), not exit code
 //!   rollback — bounded retries, best-effort CONTINUE, never an infinite loop (CRITICAL #5)
 //!   recover  — reconcile the in-flight action BEFORE rolling back (CRITICAL #4 / Finding #1)
-//!   finalize — record partially_reverted / revert_failed honestly
+//!   finalize — record partially_reverted / revert_failed honestly, clean up backups
 //!
-//! SCAFFOLD: orchestration is written; leaves (`preflight`, `reboot_pending_check`,
-//! reconcile's undo synthesis) are `todo!()`. NOT yet compiled (no toolchain on host).
+//! Implemented and tested on Linux against the real store + dotfile/script handlers.
+//! The Windows-only leaves (`preflight`/`reboot_pending`) are cfg-gated to no-ops
+//! off-Windows; their real implementations are Lane B (see `docs/FOLLOWUPS.md`).
 
 use crate::handler::Handler;
 use crate::store::{NewAction, StateStore};
@@ -27,6 +28,24 @@ pub struct Profile {
     pub name: String,
     pub hash: String,
     pub items: Vec<Item>,
+}
+
+/// Whether a tracked target still matches what Candylane recorded. Powers `status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncState {
+    /// Probe matches the recorded after-state.
+    InSync,
+    /// Probe differs from the recorded after-state (changed since the pull).
+    Drifted,
+    /// No observable state to compare (e.g. scripts probe `null`).
+    NotApplicable,
+}
+
+/// One row of a `status` report: a tracked target and its current drift state.
+pub struct StatusEntry {
+    pub handler: HandlerKind,
+    pub target: Target,
+    pub state: SyncState,
 }
 
 pub struct Engine<'a> {
@@ -139,8 +158,16 @@ impl<'a> Engine<'a> {
             while attempts < self.max_undo_attempts {
                 match handler.undo(&action, &ctx) {
                     Ok(()) => {
-                        self.store
-                            .set_action_status(action.id, ActionStatus::Reverted)?;
+                        // Honesty: a OneWay action's undo() is a deliberate no-op — nothing
+                        // was reversed. Record `UndoSkipped`, distinct from `Reverted`, so
+                        // history/diff never claim a reversal that did not happen. The
+                        // `undo_kind = one_way` column carries the same truth.
+                        let status = if action.undo_kind == UndoKind::OneWay {
+                            ActionStatus::UndoSkipped
+                        } else {
+                            ActionStatus::Reverted
+                        };
+                        self.store.set_action_status(action.id, status)?;
                         reverted = true;
                         break;
                     }
@@ -160,11 +187,18 @@ impl<'a> Engine<'a> {
 
     /// Recover from an interrupted pull. The order matters: reconcile the in-flight
     /// action FIRST (its real-world outcome is unknown after a crash), then roll back.
+    ///
+    /// The recovery is itself recorded as an `OpKind::Recover` op linked to the interrupted
+    /// pull, so `history` shows that a crash was recovered rather than the pull silently
+    /// changing status on its own.
     pub fn recover(&mut self) -> Result<()> {
         if let Some(op) = self.store.unfinished_op()? {
+            let rec = self.store.begin_op(OpKind::Recover, None, None, Some(op))?;
             self.reconcile(op)?;
             self.rollback(op)?;
-            self.finalize_op(op)?;
+            let outcome = self.finalize_op(op)?;
+            // Mirror the interrupted pull's outcome onto the recovery op.
+            self.store.set_op_status(rec, outcome)?;
         }
         Ok(())
     }
@@ -182,8 +216,19 @@ impl<'a> Engine<'a> {
                 // It applied before the crash. Build the undo recipe from observed state
                 // so rollback can reverse it. Handler-specific (e.g. winget: uninstall the
                 // version now present). This is the one genuinely new leaf reconcile needs.
-                let _ = &real;
-                todo!("handler.synthesize_undo(&action.target, &real) -> (after, undo); set_action_applied");
+                //
+                // Invariant: scripts have a null probe state, so `real == before` always
+                // and this branch is unreachable for them. synthesize_undo() on a script
+                // bails by design; assert here so a future probe() change breaks loudly in
+                // debug builds instead of surfacing as an opaque recovery failure.
+                debug_assert_ne!(
+                    action.handler,
+                    HandlerKind::Script,
+                    "script actions must never reach synthesize_undo (null probe state)"
+                );
+                let applied = handler.synthesize_undo(&action.target, &action.before, &real)?;
+                self.store
+                    .set_action_applied(action.id, &applied.after, &applied.undo)?;
             } else {
                 self.store
                     .set_action_status(action.id, ActionStatus::Skipped)?;
@@ -192,9 +237,15 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
-    /// Record the honest operation outcome after a rollback.
-    fn finalize_op(&mut self, op: i64) -> Result<()> {
+    /// Record the honest operation outcome after a rollback, and on a fully-clean revert
+    /// remove the op's backup directory. Returns the recorded outcome.
+    fn finalize_op(&mut self, op: i64) -> Result<OpStatus> {
         let statuses = self.store.action_statuses(op)?;
+        // `UndoSkipped` (a one-way action rollback reached) is NOT a failure and NOT a
+        // stranded `Applied` — the rollback completed honestly; the irreversibility is
+        // surfaced per-action via undo_kind. So it falls through to `Reverted` at the op
+        // level. Only a genuinely stuck undo (`UndoFailed`) or a still-`Applied` row
+        // downgrades the operation outcome.
         let status = if statuses.contains(&ActionStatus::UndoFailed) {
             OpStatus::RevertFailed
         } else if statuses.contains(&ActionStatus::Applied) {
@@ -203,7 +254,19 @@ impl<'a> Engine<'a> {
             OpStatus::Reverted
         };
         self.store.set_op_status(op, status)?;
-        Ok(())
+
+        // Backups are only needed while an op is applied or partially reverted. After a
+        // FULLY clean revert they are dead weight AND a lingering copy of the user's
+        // original file bytes — remove them. Keep them for RevertFailed/PartiallyReverted
+        // so a manual retry still has the originals. Best-effort: the files are already
+        // restored, so a cleanup failure is not fatal to the revert.
+        if status == OpStatus::Reverted {
+            let dir = self.backups_root.join(op.to_string());
+            if dir.exists() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+        Ok(status)
     }
 
     /// Explicit user-invoked revert of the last applied pull.
@@ -231,16 +294,60 @@ impl<'a> Engine<'a> {
         Ok(plan)
     }
 
+    /// Validate the machine against the last applied pull: re-probe every applied target
+    /// and report whether it still matches the recorded after-state. Read-only. Powers
+    /// `candylane status`.
+    pub fn status(&self) -> Result<Vec<StatusEntry>> {
+        let mut report = Vec::new();
+        if let Some(op) = self.store.last_applied_op()? {
+            for action in self.store.applied_actions_desc(op)? {
+                let handler = self.handlers.get(action.handler);
+                let probe = handler.probe(&action.target)?;
+                let state = if probe.0.is_null() {
+                    SyncState::NotApplicable
+                } else if action.after.as_ref() == Some(&probe.0) {
+                    SyncState::InSync
+                } else {
+                    SyncState::Drifted
+                };
+                report.push(StatusEntry {
+                    handler: action.handler,
+                    target: action.target,
+                    state,
+                });
+            }
+        }
+        Ok(report)
+    }
+
     // ---- leaves (Lane A tail / Lane B) -----------------------------------------
 
     /// winget present? a reboot already pending before we start? (abort early)
+    ///
+    /// Off-Windows there is no winget and no reboot-pending flag to consult, so the
+    /// check is a no-op — this is what makes the dotfile + script vertical slice runnable
+    /// on Linux. The real Windows check (winget.exe on PATH, reboot already pending) is
+    /// Lane B.
+    #[cfg(windows)]
     fn preflight(&self) -> Result<()> {
-        todo!("check winget.exe on PATH; bail if reboot already pending")
+        todo!("Lane B — check winget.exe on PATH; bail if reboot already pending")
+    }
+
+    #[cfg(not(windows))]
+    fn preflight(&self) -> Result<()> {
+        Ok(())
     }
 
     /// Read the OS reboot-pending flags (CBS RebootPending + Session Manager
-    /// PendingFileRenameOperations). Windows-specific.
+    /// PendingFileRenameOperations). Windows-specific; off-Windows nothing sets these,
+    /// so a pull never has to abort mid-stream for a pending reboot.
+    #[cfg(windows)]
     fn reboot_pending(&self) -> Result<bool> {
-        todo!("probe reboot-pending registry/state")
+        todo!("Lane B — probe reboot-pending registry/state")
+    }
+
+    #[cfg(not(windows))]
+    fn reboot_pending(&self) -> Result<bool> {
+        Ok(false)
     }
 }

@@ -1,7 +1,7 @@
 //! Core data types shared by the engine and the handlers.
 //!
-//! SCAFFOLD: structurally complete, NOT yet compiled (no toolchain on the dev host).
-//! The enums map 1:1 to the CHECK constraints in `migrations/0001_init.sql`.
+//! The enums map 1:1 to the CHECK constraints in `migrations/0001_init.sql`
+//! (enums and SQL move together).
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -43,6 +43,10 @@ pub enum ActionStatus {
     Skipped,
     /// undo() exhausted `max_undo_attempts`; rollback continued best-effort.
     UndoFailed,
+    /// Rollback reached this action but its `undo_kind` is `OneWay` — there is
+    /// nothing to reverse. Distinct from `Reverted` so history/diff never claim a
+    /// reversal that did not happen (paired with `undo_kind = one_way`).
+    UndoSkipped,
 }
 
 /// Per-operation lifecycle. Mirrors the `operations.status` CHECK set.
@@ -112,6 +116,10 @@ pub struct PlannedAction {
     pub target: Target,
     pub before: Json,
     pub undo_kind: UndoKind,
+    /// Handler-private data threaded from `plan()` to `apply()` (e.g. the dotfile
+    /// source path + desired sha, or a script's run/undo commands). `Json::Null`
+    /// for handlers that need nothing extra. Never persisted — recomputed each plan.
+    pub payload: Json,
 }
 
 /// Returned by `apply()` after it re-probes to confirm the real effect.
@@ -119,6 +127,17 @@ pub struct PlannedAction {
 pub struct Applied {
     pub after: Json, // → actions.after_json
     pub undo: Json,  // → actions.undo_json (imperative recipe)
+}
+
+/// A row read back from the `operations` table, for `history`.
+#[derive(Debug, Clone)]
+pub struct OperationRow {
+    pub id: i64,
+    pub kind: OpKind,
+    pub profile: Option<String>,
+    pub status: OpStatus,
+    pub started_at: String,
+    pub finished_at: Option<String>,
 }
 
 /// A row read back from the DB, handed to `undo()`.
