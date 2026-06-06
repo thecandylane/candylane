@@ -7,10 +7,13 @@
 //!   finalize — record partially_reverted / revert_failed honestly, clean up backups
 //!
 //! Implemented and tested on Linux against the real store + dotfile/script handlers.
-//! The Windows-only leaves (`preflight`/`reboot_pending`) are cfg-gated to no-ops
-//! off-Windows; their real implementations are Lane B (see `docs/FOLLOWUPS.md`).
+//! Reboot-pending detection is behind the injectable [`RebootCheck`] seam (mirroring
+//! [`HandlerRegistry`] / `WingetExecutor`): the real impl shells PowerShell on Windows,
+//! the cross-platform default [`NoRebootCheck`] always reports clear, and tests inject a
+//! fake to exercise the abort path. See `crate::reboot`.
 
 use crate::handler::Handler;
+use crate::reboot::RebootCheck;
 use crate::store::{NewAction, StateStore};
 use crate::types::*;
 use crate::Result;
@@ -51,6 +54,9 @@ pub struct StatusEntry {
 pub struct Engine<'a> {
     pub store: &'a mut dyn StateStore,
     pub handlers: &'a dyn HandlerRegistry,
+    /// Reboot-pending detector (CRITICAL #5 gate). Inject [`crate::reboot::NoRebootCheck`]
+    /// off-Windows / in tests, or [`crate::reboot::PowerShellRebootCheck`] on Windows.
+    pub reboot_check: &'a dyn RebootCheck,
     pub backups_root: PathBuf, // ~/.candylane/backups
     pub timeout: Duration,
     pub max_undo_attempts: u32,
@@ -320,34 +326,33 @@ impl<'a> Engine<'a> {
         Ok(report)
     }
 
-    // ---- leaves (Lane A tail / Lane B) -----------------------------------------
+    // ---- leaves --------------------------------------------------------------
 
-    /// winget present? a reboot already pending before we start? (abort early)
+    /// Abort before we start if a reboot is already pending (CRITICAL #5: a pending
+    /// reboot poisons the next install). Delegates to the injected [`RebootCheck`]; the
+    /// gate is CBS∨WU (see [`RebootState::must_abort`]). PendingFileRenameOperations is
+    /// advisory only — it is True on healthy machines (installers queue file renames as
+    /// normal work), so gating on it would refuse pulls on most real systems.
     ///
-    /// Off-Windows there is no winget and no reboot-pending flag to consult, so the
-    /// check is a no-op — this is what makes the dotfile + script vertical slice runnable
-    /// on Linux. The real Windows check (winget.exe on PATH, reboot already pending) is
-    /// Lane B.
-    #[cfg(windows)]
+    /// Spec note: PHASE1_ARCHITECTURE said "reboot-pending → abort"; this defines
+    /// reboot-pending as CBS∨WU with PFRO advisory (FOLLOWUPS, locked decisions).
     fn preflight(&self) -> Result<()> {
-        todo!("Lane B — check winget.exe on PATH; bail if reboot already pending")
-    }
-
-    #[cfg(not(windows))]
-    fn preflight(&self) -> Result<()> {
+        let state = self.reboot_check.state()?;
+        if state.must_abort() {
+            anyhow::bail!(
+                "a system reboot is already pending ({}) — reboot, then run the pull",
+                state.reasons()
+            );
+        }
         Ok(())
     }
 
-    /// Read the OS reboot-pending flags (CBS RebootPending + Session Manager
-    /// PendingFileRenameOperations). Windows-specific; off-Windows nothing sets these,
-    /// so a pull never has to abort mid-stream for a pending reboot.
-    #[cfg(windows)]
+    /// Mid-pull reboot gate: after an install, did Windows servicing flip a reboot
+    /// requirement that would poison the next install? Same CBS∨WU predicate as
+    /// [`preflight`] (single source of truth — they must not drift). PFRO is NOT consulted
+    /// here: a winget install legitimately queues file renames, so PFRO trips *because the
+    /// pull is working* — gating on it would roll back pull #1 of a healthy run.
     fn reboot_pending(&self) -> Result<bool> {
-        todo!("Lane B — probe reboot-pending registry/state")
-    }
-
-    #[cfg(not(windows))]
-    fn reboot_pending(&self) -> Result<bool> {
-        Ok(false)
+        Ok(self.reboot_check.state()?.must_abort())
     }
 }

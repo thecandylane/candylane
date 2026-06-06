@@ -303,7 +303,11 @@ fn run_script_unix(script: &str, timeout: std::time::Duration) -> Result<serde_j
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    // `Instant` is only used by the unix-only timeout test; gate it so the Windows test
+    // build (where that test compiles out) doesn't see an unused import (was F13).
+    #[cfg(unix)]
+    use std::time::Instant;
 
     fn make_ctx(_timeout: Duration) -> std::path::PathBuf {
         // We return the backups_dir PathBuf; callers build ApplyCtx inline so the
@@ -621,6 +625,8 @@ mod tests {
 
     /// Returns a unique path in the system temp directory for use as a marker file.
     /// Does NOT create the file; callers do that as part of the test.
+    /// Unix-only: its callers (the undo-script tests) are `#[cfg(unix)]`.
+    #[cfg(unix)]
     fn tempfile_path() -> std::path::PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
         let nanos = SystemTime::now()

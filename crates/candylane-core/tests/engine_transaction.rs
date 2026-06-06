@@ -1,29 +1,11 @@
 //! Integration tests for the engine's transaction / rollback / recover logic.
 //!
-//! No Windows, no real DB, no winget. Every external dependency is faked inline.
-//!
-//! # Needed pub additions (noted here, not added to other files)
-//!
-//! 1. `Engine::pull_without_preflight(&mut self, profile: &Profile) -> Result<()>`
-//!    — identical to `pull()` but omits the `self.preflight()?` call so the engine
-//!    loop is exercisable off-Windows where `preflight` is `todo!()`.
-//!    Suggested placement: `engine.rs`, gated with `#[cfg(any(test, feature="test-utils"))]`.
-//!
-//! 2. `Handler::synthesize_undo(&self, target: &Target, probe: &Probe) -> Result<(Json, Json)>`
-//!    — returns `(after_json, undo_json)` from the post-crash observed state so that
-//!    `reconcile()` can call `store.set_action_applied` on the in-flight action without
-//!    a `todo!()`. Required for test 3's "probe != before" (applied) path.
-//!    Until this addition lands the `#[should_panic]` marker on that sub-test documents it.
-//!
-//! 3. `Engine::finalize_op(&mut self, op: i64) -> Result<()>` made `pub`
-//!    — currently private; needed so test 4 (`rollback_bounded`) can call
-//!    `rollback` + `finalize_op` without wrapping via `recover()`.
-//!    Alternatively, keep it private and route through `recover()` (see test 4).
-//!
-//! Tests 1, 2, 4, 5 drive the engine via `rollback` / `recover` and the store directly;
-//! they do NOT call `Engine::pull` and are therefore unaffected by the `preflight` todo.
-//! Tests 1, 2, 5 demonstrate the pull loop by manually orchestrating store inserts +
-//! calling `Engine::rollback`/`recover`, matching the engine.rs loop exactly.
+//! No Windows, no real DB, no winget. Every external dependency is faked inline: a
+//! `FakeStore` (in-memory `StateStore`), a `FakeHandler` (scriptable probe/plan/apply/undo),
+//! and a `FakeRebootCheck` (canned reboot state). Tests drive the real `Engine::pull` /
+//! `rollback` / `recover` directly — the reboot gate is injected via the `RebootCheck` seam
+//! (defaulted to always-clear through `make_engine`), so `pull()` is fully exercisable here
+//! without a Windows host.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -31,6 +13,7 @@ use std::time::Duration;
 
 use candylane_core::engine::{Engine, HandlerRegistry, Profile};
 use candylane_core::handler::Handler;
+use candylane_core::reboot::{NoRebootCheck, RebootCheck, RebootState};
 use candylane_core::store::{NewAction, StateStore};
 use candylane_core::types::*;
 use candylane_core::Result;
@@ -470,12 +453,27 @@ impl<'a> HandlerRegistry for FakeRegistry<'a> {
 // Helpers
 // ============================================================================
 
-/// Build an `Engine` with the given store + registry. The backups_root is a
-/// throwaway temp path — FakeHandler ignores it.
+/// A `'static` always-clear reboot check, so `make_engine` can hand the engine a default
+/// reference without the caller having to own one. Tests that exercise the reboot gate
+/// build their own `FakeRebootCheck` and use `make_engine_with_reboot`.
+static NO_REBOOT: NoRebootCheck = NoRebootCheck;
+
+/// Build an `Engine` with the given store + registry and the default (always-clear) reboot
+/// check. The backups_root is a throwaway temp path — FakeHandler ignores it.
 fn make_engine<'a>(store: &'a mut dyn StateStore, handlers: &'a dyn HandlerRegistry) -> Engine<'a> {
+    make_engine_with_reboot(store, handlers, &NO_REBOOT)
+}
+
+/// Like [`make_engine`] but with an injected reboot check (for the abort-path tests).
+fn make_engine_with_reboot<'a>(
+    store: &'a mut dyn StateStore,
+    handlers: &'a dyn HandlerRegistry,
+    reboot_check: &'a dyn RebootCheck,
+) -> Engine<'a> {
     Engine {
         store,
         handlers,
+        reboot_check,
         backups_root: std::path::PathBuf::from("/tmp/candylane-test-backups"),
         timeout: Duration::from_secs(5),
         max_undo_attempts: 3,
@@ -494,104 +492,10 @@ fn winget_profile(pkgs: &[&str]) -> Profile {
     }
 }
 
-/// Directly simulate the pull loop for a profile WITHOUT calling preflight/reboot checks.
-/// Returns `(op_id, action_ids)`.  Mirrors engine.rs `pull()` inner loop exactly.
-/// Used by tests 1, 2, 5 since `Engine::pull` has a `todo!()` in `preflight()`.
-///
-/// On failure this function routes through `Engine::recover()` to trigger rollback +
-/// finalize rather than calling the private `Engine::finalize_op` directly.
-/// This works because: (a) the failing action is marked `Failed` (not `Pending`), so
-/// `reconcile` inside `recover` finds no pending action and is a no-op; (b) `rollback`
-/// then undoes all Applied actions; (c) `finalize_op` sets the op status.
-///
-/// NOTE: once `Engine::pull_without_preflight` is added (see module-level note),
-/// replace calls to this helper with that method.
-fn simulate_pull(
-    store: &mut dyn StateStore,
-    handlers: &dyn HandlerRegistry,
-    profile: &Profile,
-    max_undo: u32,
-) -> Result<(i64, Vec<i64>)> {
-    let backups_root = std::path::PathBuf::from("/tmp/candylane-test-backups");
-    let op = store.begin_op(OpKind::Pull, Some(&profile.name), Some(&profile.hash), None)?;
-    let backups_dir = backups_root.join(op.to_string());
-
-    let mut action_ids = Vec::new();
-
-    for (i, item) in profile.items.iter().enumerate() {
-        let seq = i as u32;
-        let handler = handlers.get(item.handler_kind());
-        let target = item.target();
-        let probe = handler.probe(&target)?;
-
-        match handler.plan(item, &probe)? {
-            None => {
-                let aid = store.insert_action(
-                    op,
-                    seq,
-                    &NewAction {
-                        handler: item.handler_kind(),
-                        target,
-                        before: probe.0,
-                        undo_kind: UndoKind::Noop,
-                        status: ActionStatus::Skipped,
-                    },
-                )?;
-                action_ids.push(aid);
-            }
-            Some(planned) => {
-                let aid = store.insert_action(
-                    op,
-                    seq,
-                    &NewAction {
-                        handler: planned.handler,
-                        target: planned.target.clone(),
-                        before: planned.before.clone(),
-                        undo_kind: planned.undo_kind,
-                        status: ActionStatus::Pending,
-                    },
-                )?;
-                action_ids.push(aid);
-
-                let ctx = ApplyCtx {
-                    backups_dir: &backups_dir,
-                    timeout: Duration::from_secs(5),
-                    dry_run: false,
-                    max_undo_attempts: max_undo,
-                };
-                match handler.apply(&planned, &ctx) {
-                    Ok(applied) => {
-                        store.set_action_applied(aid, &applied.after, &applied.undo)?;
-                        // No reboot_pending check (not needed for logic tests).
-                    }
-                    Err(e) => {
-                        // Mark the failed action so it is not included in rollback's
-                        // applied_actions_desc query.
-                        store.set_action_status(aid, ActionStatus::Failed)?;
-                        // Route through Engine::recover() so rollback + finalize_op
-                        // are both run via public API. The op is still `pending` at
-                        // the store level; recover() will pick it up, find no
-                        // pending action (the failing one was just marked Failed),
-                        // reconcile is a no-op, rollback undoes Applied rows, finalize
-                        // sets the op status.
-                        let mut eng = Engine {
-                            store,
-                            handlers,
-                            backups_root: backups_root.clone(),
-                            timeout: Duration::from_secs(5),
-                            max_undo_attempts: max_undo,
-                        };
-                        eng.recover()?;
-                        return Err(e);
-                    }
-                }
-            }
-        }
-    }
-
-    store.set_op_status(op, OpStatus::Applied)?;
-    Ok((op, action_ids))
-}
+// Note: the engine's real `pull()` is driven directly now (it no longer has a `todo!()`
+// preflight — reboot detection is behind the injectable `RebootCheck` seam, defaulted to
+// always-clear via `make_engine`). The former `simulate_pull` helper that duplicated the
+// pull loop has been removed; tests call `make_engine(...).pull(&profile)`.
 
 // ============================================================================
 // Test 1 — pull_all_ok
@@ -605,8 +509,12 @@ fn pull_all_ok() {
     let mut store = FakeStore::new();
     let profile = winget_profile(&["pkg-a", "pkg-b", "pkg-c"]);
 
-    let (op_id, action_ids) =
-        simulate_pull(&mut store, &registry, &profile, 3).expect("pull should succeed");
+    make_engine(&mut store, &registry)
+        .pull(&profile)
+        .expect("pull should succeed");
+
+    // The first (only) op has id 1 in the FakeStore.
+    let op_id = 1i64;
 
     // Op is Applied.
     assert_eq!(
@@ -616,12 +524,12 @@ fn pull_all_ok() {
     );
 
     // Every action is Applied.
-    for aid in &action_ids {
+    for action in &store.actions {
         assert_eq!(
-            store.action(*aid).unwrap().status,
+            action.status,
             ActionStatus::Applied,
-            "action {} should be Applied",
-            aid
+            "action for {} should be Applied",
+            action.target
         );
     }
 
@@ -660,7 +568,7 @@ fn pull_action_k_fails() {
     let mut store = FakeStore::new();
     let profile = winget_profile(&["pkg-a", "pkg-b", "pkg-c"]);
 
-    let result = simulate_pull(&mut store, &registry, &profile, 3);
+    let result = make_engine(&mut store, &registry).pull(&profile);
     assert!(result.is_err(), "pull should propagate the apply error");
 
     // Find the op (id = 1).
@@ -705,6 +613,79 @@ fn pull_action_k_fails() {
         undos,
         vec!["pkg-b", "pkg-a"],
         "rollback must undo in reverse seq order (pkg-b then pkg-a)"
+    );
+}
+
+// ============================================================================
+// Test 2b — reboot-pending gate (CRITICAL #5), via the injected RebootCheck seam
+// ============================================================================
+
+/// A `RebootCheck` returning a fixed state, for the abort-path tests.
+struct FakeRebootCheck(RebootState);
+impl RebootCheck for FakeRebootCheck {
+    fn state(&self) -> Result<RebootState> {
+        Ok(self.0)
+    }
+}
+
+/// preflight aborts a pull when CBS RebootPending is set — BEFORE any action is applied.
+#[test]
+fn pull_aborts_when_reboot_pending_cbs() {
+    let handler = FakeHandler::new(HandlerKind::Winget);
+    let registry = FakeRegistry::new(&handler);
+    let mut store = FakeStore::new();
+    let profile = winget_profile(&["pkg-a", "pkg-b"]);
+
+    let reboot = FakeRebootCheck(RebootState {
+        cbs: true,
+        ..Default::default()
+    });
+
+    let result = make_engine_with_reboot(&mut store, &registry, &reboot).pull(&profile);
+    assert!(result.is_err(), "pull must abort when a reboot is pending");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("reboot is already pending"),
+        "error should explain the reboot gate"
+    );
+
+    // Nothing was applied: no op, no actions, no apply() calls.
+    assert!(
+        store.actions.is_empty(),
+        "no action rows may be written when preflight aborts"
+    );
+    let applies = handler
+        .calls()
+        .into_iter()
+        .filter(|(m, _)| m == "apply")
+        .count();
+    assert_eq!(applies, 0, "apply() must never run when preflight aborts");
+}
+
+/// PendingFileRenameOperations alone must NOT abort a pull — it is advisory (noisy on
+/// healthy machines; winget installs legitimately set it). The pull proceeds normally.
+#[test]
+fn pull_proceeds_when_only_pfro_pending() {
+    let handler = FakeHandler::new(HandlerKind::Winget);
+    let registry = FakeRegistry::new(&handler);
+    let mut store = FakeStore::new();
+    let profile = winget_profile(&["pkg-a"]);
+
+    let reboot = FakeRebootCheck(RebootState {
+        pfro: true,
+        ..Default::default()
+    });
+
+    make_engine_with_reboot(&mut store, &registry, &reboot)
+        .pull(&profile)
+        .expect("PFRO-only must not block a pull (advisory signal)");
+
+    assert_eq!(
+        store.op(1).unwrap().status,
+        OpStatus::Applied,
+        "pull should complete normally with only PFRO set"
     );
 }
 
@@ -953,9 +934,12 @@ fn rollback_bounded() {
     // pkg-b and pkg-a: no scripted undo → FakeHandler default of Ok(()) → succeed.
 
     let registry = FakeRegistry::new(&handler);
+    // Custom max_undo_attempts (MAX_UNDO) for the bounded-rollback assertion, so this one
+    // builds the Engine directly rather than via make_engine (which fixes it at 3).
     let mut eng = Engine {
         store: &mut store,
         handlers: &registry,
+        reboot_check: &NO_REBOOT,
         backups_root: std::path::PathBuf::from("/tmp"),
         timeout: Duration::from_secs(5),
         max_undo_attempts: MAX_UNDO,
@@ -1026,12 +1010,14 @@ fn re_pull_noop() {
 
     // --- First pull: items need to be applied. ---
     // Defaults in FakeHandler: probe returns not-installed, plan returns Some, apply succeeds.
-    let (op1, aids1) =
-        simulate_pull(&mut store, &registry, &profile, 3).expect("first pull should succeed");
+    let op1 = 1i64;
+    make_engine(&mut store, &registry)
+        .pull(&profile)
+        .expect("first pull should succeed");
 
     assert_eq!(store.op(op1).unwrap().status, OpStatus::Applied);
-    for aid in &aids1 {
-        assert_eq!(store.action(*aid).unwrap().status, ActionStatus::Applied);
+    for action in store.actions.iter().filter(|a| a.op_id == op1) {
+        assert_eq!(action.status, ActionStatus::Applied);
     }
 
     // --- Second pull: everything already satisfied (plan() returns None). ---
@@ -1039,8 +1025,10 @@ fn re_pull_noop() {
     handler.push_plan("pkg-a", None);
     handler.push_plan("pkg-b", None);
 
-    let (op2, aids2) =
-        simulate_pull(&mut store, &registry, &profile, 3).expect("second pull should succeed");
+    let op2 = 2i64;
+    make_engine(&mut store, &registry)
+        .pull(&profile)
+        .expect("second pull should succeed");
 
     assert_eq!(
         store.op(op2).unwrap().status,
@@ -1049,9 +1037,9 @@ fn re_pull_noop() {
     );
 
     // New actions are Skipped (not Applied).
-    for aid in &aids2 {
+    for action in store.actions.iter().filter(|a| a.op_id == op2) {
         assert_eq!(
-            store.action(*aid).unwrap().status,
+            action.status,
             ActionStatus::Skipped,
             "re-pull actions should be Skipped when already satisfied"
         );

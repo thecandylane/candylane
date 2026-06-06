@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 
 use candylane_core::engine::{Engine, SyncState};
 use candylane_core::lock::Lock;
+use candylane_core::reboot::RebootCheck;
 use candylane_core::registry::Handlers;
 use candylane_core::store::{SqliteStore, StateStore};
 use candylane_core::{profile, UndoKind};
@@ -75,8 +76,23 @@ fn backups_root() -> Result<PathBuf> {
     Ok(candylane_home()?.join("backups"))
 }
 
+/// The production reboot-pending detector: real PowerShell probe on Windows, always-clear
+/// elsewhere. Boxed so the choice is a single expression; both impls are zero-size.
+fn reboot_check() -> Box<dyn RebootCheck> {
+    #[cfg(windows)]
+    {
+        Box::new(candylane_core::reboot::PowerShellRebootCheck::new())
+    }
+    #[cfg(not(windows))]
+    {
+        Box::new(candylane_core::reboot::NoRebootCheck)
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Built once; referenced by every engine-constructing arm (stateless, cheap).
+    let reboot = reboot_check();
     match cli.command {
         Command::Init => {
             let id = candylane_crypto::Identity::generate()?;
@@ -94,6 +110,7 @@ fn main() -> Result<()> {
             let engine = Engine {
                 store: &mut store,
                 handlers: &handlers,
+                reboot_check: reboot.as_ref(),
                 backups_root: backups_root()?,
                 timeout: SCRIPT_TIMEOUT,
                 max_undo_attempts: MAX_UNDO_ATTEMPTS,
@@ -129,6 +146,7 @@ fn main() -> Result<()> {
             let mut engine = Engine {
                 store: &mut store,
                 handlers: &handlers,
+                reboot_check: reboot.as_ref(),
                 backups_root: backups_root()?,
                 timeout: SCRIPT_TIMEOUT,
                 max_undo_attempts: MAX_UNDO_ATTEMPTS,
@@ -154,6 +172,7 @@ fn main() -> Result<()> {
             let mut engine = Engine {
                 store: &mut store,
                 handlers: &handlers,
+                reboot_check: reboot.as_ref(),
                 backups_root: backups_root()?,
                 timeout: SCRIPT_TIMEOUT,
                 max_undo_attempts: MAX_UNDO_ATTEMPTS,
@@ -170,6 +189,7 @@ fn main() -> Result<()> {
             let mut engine = Engine {
                 store: &mut store,
                 handlers: &handlers,
+                reboot_check: reboot.as_ref(),
                 backups_root: backups_root()?,
                 timeout: SCRIPT_TIMEOUT,
                 max_undo_attempts: MAX_UNDO_ATTEMPTS,
@@ -208,6 +228,7 @@ fn main() -> Result<()> {
             let engine = Engine {
                 store: &mut store,
                 handlers: &handlers,
+                reboot_check: reboot.as_ref(),
                 backups_root: backups_root()?,
                 timeout: SCRIPT_TIMEOUT,
                 max_undo_attempts: MAX_UNDO_ATTEMPTS,

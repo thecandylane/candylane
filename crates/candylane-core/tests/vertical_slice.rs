@@ -10,12 +10,20 @@
 //!     (the marker file disappears), and the op ends `Reverted`.
 //!
 //! Everything lives under absolute temp paths — the real `$HOME` is never touched.
+//!
+//! Unix-only: the script handler's timeout group-kill (CRITICAL #1) is a `#[cfg(unix)]`
+//! path, so this whole money-test file is gated to unix. On Windows the file compiles to
+//! nothing (the winget engine round-trip lives in `winget_live.rs` instead). Gating the
+//! file once — rather than each fn + helper — keeps `clippy -D warnings` green on msvc
+//! without orphaned-helper noise (was F13).
+#![cfg(unix)]
 
 use std::path::Path;
 use std::time::Duration;
 
 use candylane_core::engine::Engine;
 use candylane_core::profile;
+use candylane_core::reboot::NoRebootCheck;
 use candylane_core::registry::Handlers;
 use candylane_core::store::{SqliteStore, StateStore};
 use tempfile::TempDir;
@@ -84,7 +92,6 @@ undo = "{undo}"
 }
 
 /// pull → revert: the box ends functional-clean vanilla.
-#[cfg(unix)]
 #[test]
 fn pull_then_revert_is_functional_clean() {
     let fx = build_fixture();
@@ -100,6 +107,7 @@ fn pull_then_revert_is_functional_clean() {
         let mut engine = Engine {
             store: &mut store,
             handlers: &handlers,
+            reboot_check: &NoRebootCheck,
             backups_root: fx.backups_root.clone(),
             timeout: Duration::from_secs(10),
             max_undo_attempts: 3,
@@ -138,6 +146,7 @@ fn pull_then_revert_is_functional_clean() {
         let mut engine = Engine {
             store: &mut store,
             handlers: &handlers,
+            reboot_check: &NoRebootCheck,
             backups_root: fx.backups_root.clone(),
             timeout: Duration::from_secs(10),
             max_undo_attempts: 3,
@@ -178,7 +187,6 @@ fn pull_then_revert_is_functional_clean() {
 /// The handler unit test covers backup-then-restore in isolation; this proves the recipe
 /// survives the round-trip through `SqliteStore` (serialize → persist → read back → undo)
 /// — the part the money test's before-absent path never exercises.
-#[cfg(unix)]
 #[test]
 fn pull_then_revert_restores_preexisting_dotfile() {
     let tmp = TempDir::new().unwrap();
@@ -219,6 +227,7 @@ target = "{target}"
         let mut engine = Engine {
             store: &mut store,
             handlers: &handlers,
+            reboot_check: &NoRebootCheck,
             backups_root: backups_root.clone(),
             timeout: Duration::from_secs(10),
             max_undo_attempts: 3,
@@ -240,6 +249,7 @@ target = "{target}"
         let mut engine = Engine {
             store: &mut store,
             handlers: &handlers,
+            reboot_check: &NoRebootCheck,
             backups_root: backups_root.clone(),
             timeout: Duration::from_secs(10),
             max_undo_attempts: 3,
@@ -262,7 +272,6 @@ target = "{target}"
 /// E-ONEWAY: a one-way script (run, no undo) must end `UndoSkipped`, never `Reverted` — the
 /// status must not claim a reversal that didn't happen. The script's effect persists; the op
 /// still finalizes `reverted` (one-way residue is per-action honesty, not an op failure).
-#[cfg(unix)]
 #[test]
 fn one_way_script_is_undo_skipped_not_reverted() {
     use candylane_core::ActionStatus;
@@ -286,6 +295,7 @@ fn one_way_script_is_undo_skipped_not_reverted() {
         let mut engine = Engine {
             store: &mut store,
             handlers: &handlers,
+            reboot_check: &NoRebootCheck,
             backups_root: backups_root.clone(),
             timeout: Duration::from_secs(10),
             max_undo_attempts: 3,
@@ -301,6 +311,7 @@ fn one_way_script_is_undo_skipped_not_reverted() {
         let mut engine = Engine {
             store: &mut store,
             handlers: &handlers,
+            reboot_check: &NoRebootCheck,
             backups_root: backups_root.clone(),
             timeout: Duration::from_secs(10),
             max_undo_attempts: 3,
@@ -327,7 +338,6 @@ fn one_way_script_is_undo_skipped_not_reverted() {
 /// `pending` (as a crash mid-apply would leave them) WITHOUT undoing the file the apply wrote,
 /// then `recover()`. Reconcile must see probe != before, synthesize the undo via the real
 /// `SqliteStore` round-trip, roll back to clean, and record an `OpKind::Recover` audit op (F8).
-#[cfg(unix)]
 #[test]
 fn recover_after_simulated_crash_through_real_store() {
     use candylane_core::OpKind;
@@ -356,6 +366,7 @@ fn recover_after_simulated_crash_through_real_store() {
         let mut engine = Engine {
             store: &mut store,
             handlers: &handlers,
+            reboot_check: &NoRebootCheck,
             backups_root: backups_root.clone(),
             timeout: Duration::from_secs(10),
             max_undo_attempts: 3,
@@ -388,6 +399,7 @@ fn recover_after_simulated_crash_through_real_store() {
         let mut engine = Engine {
             store: &mut store,
             handlers: &handlers,
+            reboot_check: &NoRebootCheck,
             backups_root: backups_root.clone(),
             timeout: Duration::from_secs(10),
             max_undo_attempts: 3,

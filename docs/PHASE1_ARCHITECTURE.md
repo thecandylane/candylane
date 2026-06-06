@@ -47,6 +47,7 @@ and a `meta` table from commit one.
 | 6 | Keystone test rig | **Hyper-V + `Checkpoint-VM`/`Restore-VMSnapshot`** | Native Windows-on-Windows. |
 | 7 | "Vanilla" bar | **Functional-clean now, tighten later.** Revert asserts: `winget list` shows zero managed packages, `probe()` returns recorded before-state for every target, identifiable managed PATH entries removed. Registry/shell crumbs may remain and `diff`/`history` say so. Registry/PATH delta capture → **tracked Phase 3 TODO** (rides the debloat engine's registry machinery). | winget cannot restore registry/PATH/shortcuts. This bar asserts only what winget can prove, so the 10x loop asserts something true. |
 | 8 | `windows-rs` carve-out | **One Windows-API dependency allowed in `candylane-crypto` only** (`windows-acl` or a thin `windows` slice) to set+assert owner-only ACLs. Deferral holds everywhere else (registry/services/DISM). | CRITICAL #3 is unimplementable with `std` on Windows; the deferral was about not doing system surgery early, not about gutting the trust model. The crate boundary contains the exception. |
+| 9 | "Reboot-pending" definition | **Abort the pull iff CBS `RebootPending` ∨ WindowsUpdate `RebootRequired`.** `PendingFileRenameOperations` (PFRO) is **advisory** — captured but never blocks (persisting it to the op log is tracked as F14). Same CBS∨WU predicate at preflight *and* the post-install mid-pull check (one function — `RebootState::must_abort` — so they cannot drift). Detection shells PowerShell (no new dep; `windows-rs` carve-out stays confined to crypto). | Refines the earlier "reboot-pending → abort." PFRO is noisy: winget installers queue file renames as ordinary work, so PFRO is True on healthy machines and *becomes* True mid-pull *because the pull is working* — gating on it would roll back pull #1 of a clean run and the 10x loop never reaches 1x. CBS∨WU are the signals that actually mean "servicing requires a reboot before more installs are safe" (the exact failure CRITICAL #5 guards). |
 
 Obvious calls locked: **delta ownership** (revert only undoes what Candylane installed),
 **back up bytes not just hashes**, **single-writer lockfile** (`fs2`, fail-fast, PID
@@ -216,7 +217,7 @@ pub struct ApplyCtx<'a> {
 
 ```
 pull(profile):
-  preflight: winget present? reboot-pending? (abort early if pending)   # v2 (#6)
+  preflight: winget present? reboot-pending (CBS∨WU)? (abort early)     # v2 (#6, #9)
   op = db.begin(kind=pull, status=pending)
   for (seq, desired) in profile.items().enumerate():
       probe = handler.probe(desired.target)?
@@ -226,7 +227,7 @@ pull(profile):
               db.insert(action, seq, status=pending, before=pa.before, undo_kind=pa.undo_kind)
               match handler.apply(pa, ctx):          # apply RE-PROBES; success = real state
                   Ok(applied) =>
-                      reboot_pending_check()?         # v2: a package may have set it (#5)
+                      reboot_pending_check()?         # CBS∨WU only; PFRO advisory (#5, #9)
                       db.update(seq, status=applied, after, undo_json=applied.undo)
                   Err(e)      => db.update(seq, status=failed, error=e)
                                  rollback(op); finalize_op(op); return Err(e)

@@ -45,6 +45,19 @@ The hardening pass closed these (all Linux-tractable; verified by `cargo test` �
 - **Windows build chain** — rustup + MSVC Build Tools installed; native msvc `cargo build` produces
   a runnable `candylane.exe` from WSL (rsync→C: recipe). Toolchain is rustc/cargo 1.96.0 (matches
   the pin). `candylane-crypto` + `windows-acl` compile on the real target for the first time.
+- **B-PREFLIGHT** (reboot half) — `preflight()` / `reboot_pending()` are real, behind the new
+  injectable `RebootCheck` seam (`core::reboot`): `PowerShellRebootCheck` (Windows) probes CBS∨WU
+  (hard gate) + PFRO (advisory), `NoRebootCheck` is the cross-platform default. **Spec amendment
+  recorded as Decision #9** (reboot-pending = CBS∨WU, PFRO advisory; same predicate at preflight +
+  mid-pull via `RebootState::must_abort`). The seam let the former `simulate_pull` test stopgap be
+  **deleted** — engine tests now drive the real `Engine::pull`. New abort-path tests prove CBS
+  aborts (no action written) and PFRO-only proceeds. Remaining: explicit winget-present preflight
+  (B-PREFLIGHT2, low).
+- **Lane B end-to-end** — `tests/winget_live.rs::engine_pull_then_revert_winget_through_store`
+  (`#[cfg(windows)]` + `#[ignore]`): a full `Engine::pull` (real preflight + real `SqliteStore`)
+  installs a winget package, `revert_last` reads the persisted recipe back and uninstalls.
+  Live-validated (ZoomIt, cross-checked vs raw winget at both ends). WingetHandler is now proven
+  **wired through the engine + store**, not just in isolation.
 
 ---
 
@@ -53,7 +66,8 @@ The hardening pass closed these (all Linux-tractable; verified by `cargo test` �
 | ID | Sev | Status | Item | Where | Notes |
 |----|-----|--------|------|-------|-------|
 | **F12** | Low | 🟡 | `DotfileHandler::expand()` only handles leading `~` and `$HOME`. `${HOME}`, `%APPDATA%`, `$USERPROFILE`, mid-path vars are unhandled (leading unknown `$VAR` is now *rejected*, so it fails loudly). | `dotfile.rs::expand` | Windows path-var expansion — lands with the Windows work. |
-| **F13** | Med | 🔴 | **`clippy -D warnings` FAILS on the msvc target** — 10 dead-code/unused-import errors in unix-gated test code (`vertical_slice.rs` fixture + imports, `script.rs::tempfile_path` + `Instant`). The whole `vertical_slice.rs` exercises the unix script path but isn't `#[cfg(unix)]`, so on Windows the test fns compile out and orphan their helpers. The Linux-only CI never sees it. | `tests/vertical_slice.rs`, `handlers/script.rs` (test mods) | Mechanical fix: `#[cfg(unix)]` the unix-only test fns/helpers/imports (or gate the whole file). Surfaced when clippy was first run on msvc (now possible — see host-premise note). winget code itself is clean on both targets. |
+| **F14** | Low | 🔴 | **Reboot state is not persisted to the op log.** Decision #9 / the design note call for recording all three booleans (CBS/WU/PFRO) per operation for later debugging; `preflight`/`reboot_pending` currently read `RebootState` but only gate on it — PFRO is captured in-memory, never written. | `engine.rs`, `store.rs`, `migrations/` | Needs an `operations` column (enums-and-SQL-move-together) + a store setter. Deferred from the reboot-seam commit to keep that diff schema-free. The advisory distinction still works (PFRO never blocks); this is purely the audit trail. |
+| **F13** | Med | ✅ | **`clippy -D warnings` now passes on the msvc target.** Gated `tests/vertical_slice.rs` with file-level `#![cfg(unix)]` (it's a unix-only money test — script timeout group-kill is `#[cfg(unix)]`), removing the redundant per-fn gates; gated `script.rs` test `tempfile_path` + `Instant` import with `#[cfg(unix)]`. Verified: `cargo clippy --workspace --all-targets -- -D warnings` = 0 on msvc. | `tests/vertical_slice.rs`, `handlers/script.rs` | Resolved 2026-06-06. Note: CI still only runs on Linux — running clippy on msvc remains a manual step (rsync→C: build) until a Windows CI lane exists. |
 
 ---
 
@@ -62,7 +76,7 @@ The hardening pass closed these (all Linux-tractable; verified by `cargo test` �
 | ID | Status | Item | Where | Notes |
 |----|--------|------|-------|-------|
 | **B-ACL** | 🔴 | **Crypto owner-only ACL** (Lane E / CRITICAL #3). | `candylane-crypto/src/lib.rs` | Windows `windows-acl` carve-out `todo!()`; unix is a 0600 fallback. Must set + assert owner-only on every load. (`windows-acl` now compiles on the real target — see Resolved.) |
-| **B-PREFLIGHT** | 🟡 | `preflight()` / `reboot_pending()` real Windows impl. | `engine.rs` | unix cfg-gated to `Ok(())` / `false`. Windows: winget-present check; CBS `RebootPending` + `PendingFileRenameOperations`. |
+| **B-PREFLIGHT2** | Low 🟡 | `preflight()` does the reboot gate (done) but not an explicit winget-present check. | `engine.rs` | A missing `winget.exe` already surfaces as a clear errored action (WingetHandler shells `Command::new("winget")` with context), so this is "fail earlier/clearer," not a correctness gap. Add a cheap `where winget` / version probe to preflight when convenient. |
 | **B-INIT** | 🟡 | `candylane init` — full `~/.candylane/` setup + key ACL. | `candylane-cli/src/main.rs` | Generates the keypair today; the jar dirs are created lazily on first pull/lock. Windows ACL comes with B-ACL. |
 
 ---

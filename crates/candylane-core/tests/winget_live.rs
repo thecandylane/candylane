@@ -169,3 +169,109 @@ fn install_then_undo_round_trip() {
     );
     eprintln!("========== ROUND-TRIP OK: absent → installed → absent ==========\n");
 }
+
+// ============================================================================
+// Engine-level: winget through the REAL engine + SqliteStore (closes Lane B)
+// ============================================================================
+
+/// The Lane B closure: a full `Engine::pull` (which runs the real `PowerShellRebootCheck`
+/// preflight, persists the action + undo recipe to a real `SqliteStore`) installs a winget
+/// package, then `Engine::revert_last` reads the recipe back from SQLite and uninstalls it.
+/// Proves winget is WIRED end-to-end — handler + engine + store + logging — not just that
+/// the handler works in isolation.
+///
+/// Mutating + guarded exactly like `install_then_undo_round_trip`: uses ZoomIt, skips if
+/// already present. Also doubles as the live verification of `PowerShellRebootCheck` (the
+/// pull's preflight calls it for real; if a reboot were genuinely pending the test would
+/// abort with a clear message rather than mislead).
+#[test]
+#[ignore = "MUTATES the machine via the engine (installs+reverts ZoomIt); Windows host only"]
+fn engine_pull_then_revert_winget_through_store() {
+    use candylane_core::engine::{Engine, Profile};
+    use candylane_core::reboot::PowerShellRebootCheck;
+    use candylane_core::store::{SqliteStore, StateStore};
+    use candylane_core::Handlers;
+
+    const PKG: &str = "Microsoft.Sysinternals.ZoomIt";
+
+    // Guard: don't touch a package the user already has.
+    let guard = WingetHandler::new();
+    if guard.probe(&Target(PKG.into())).unwrap().0["installed"] == true {
+        eprintln!("{PKG} already installed; skipping engine round-trip to protect user state");
+        return;
+    }
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("state.db");
+    let backups_root = tmp.path().join("backups");
+
+    let profile = Profile {
+        name: "winget-engine-slice".into(),
+        hash: "live".into(),
+        items: vec![Item::Winget { pkg: PKG.into() }],
+    };
+
+    eprintln!("\n========== ENGINE WINGET PULL→REVERT (through SqliteStore): {PKG} ==========");
+
+    // ── PULL ──────────────────────────────────────────────────────────────────
+    {
+        let mut store = SqliteStore::open(&db_path).unwrap();
+        let handlers = Handlers::new();
+        let reboot = PowerShellRebootCheck::new();
+        let mut engine = Engine {
+            store: &mut store,
+            handlers: &handlers,
+            reboot_check: &reboot,
+            backups_root: backups_root.clone(),
+            timeout: Duration::from_secs(600),
+            max_undo_attempts: 3,
+        };
+        engine
+            .pull(&profile)
+            .expect("engine.pull should install the winget package");
+    }
+    eprintln!("[pull] complete");
+
+    // Independently confirm installed.
+    assert_eq!(
+        guard.probe(&Target(PKG.into())).unwrap().0["installed"],
+        true,
+        "package must be installed after engine.pull"
+    );
+
+    // The recipe was persisted: there is an applied op to revert.
+    {
+        let store = SqliteStore::open(&db_path).unwrap();
+        assert!(
+            store.last_applied_op().unwrap().is_some(),
+            "pull must have recorded an applied op in the store"
+        );
+    }
+
+    // ── REVERT ────────────────────────────────────────────────────────────────
+    {
+        let mut store = SqliteStore::open(&db_path).unwrap();
+        let handlers = Handlers::new();
+        let reboot = PowerShellRebootCheck::new();
+        let mut engine = Engine {
+            store: &mut store,
+            handlers: &handlers,
+            reboot_check: &reboot,
+            backups_root: backups_root.clone(),
+            timeout: Duration::from_secs(600),
+            max_undo_attempts: 3,
+        };
+        engine
+            .revert_last()
+            .expect("engine.revert_last should uninstall the winget package");
+    }
+    eprintln!("[revert] complete");
+
+    // Independently confirm gone.
+    assert_eq!(
+        guard.probe(&Target(PKG.into())).unwrap().0["installed"],
+        false,
+        "package must be uninstalled after engine.revert_last"
+    );
+    eprintln!("========== ENGINE ROUND-TRIP OK: pull installed → revert removed ==========\n");
+}
