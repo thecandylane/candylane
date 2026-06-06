@@ -1,0 +1,17 @@
+[package]
+name = "candylane-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "candylane"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+candylane-core.workspace = true
+candylane-crypto.workspace = true

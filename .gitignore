@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Candylane runtime state must never be committed
+.candylane/
+*.candy
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets never belong in the repo
+*.key
+*.pem

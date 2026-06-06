@@ -1,0 +1,30 @@
+# Candylane workspace — Phase 1.
+# SCAFFOLD: dependency versions are plausible but UNVERIFIED (no toolchain on the dev host).
+# Run `cargo update` + `cargo check` on a machine with Rust before trusting these pins.
+[workspace]
+members = ["crates/candylane-cli", "crates/candylane-core", "crates/candylane-crypto"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.77"
+
+[workspace.dependencies]
+anyhow       = "1"
+thiserror    = "1"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+rusqlite     = { version = "0.31", features = ["bundled"] }   # bundled = no system sqlite dep
+clap         = { version = "4", features = ["derive"] }
+indicatif    = "0.17"
+fs2          = "0.4"                                            # cross-platform advisory file lock
+sha2         = "0.10"
+time         = { version = "0.3", features = ["formatting", "macros"] }  # RFC3339 timestamps
+ed25519-dalek = "2"
+rand         = "0.8"
+
+# Internal crates
+candylane-core   = { path = "crates/candylane-core" }
+candylane-crypto = { path = "crates/candylane-crypto" }
