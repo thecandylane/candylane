@@ -14,12 +14,24 @@ Read before non-trivial work:
 - [PHASE1_ARCHITECTURE.md](./PHASE1_ARCHITECTURE.md) — the locked Phase 1 design. **Source of truth for current work.**
 - [ROADMAP.md](./ROADMAP.md) — the 12-phase spine (stop at any Era, still worth having).
 - [REFERENCES.md](./REFERENCES.md) — what to steal from, per subsystem. Point coding agents at *specific files* in those repos, not abstract descriptions.
+- [VOCABULARY.md](./VOCABULARY.md) — the sweet-shop lexicon (box ⊃ tin ⊃ biscuit, lanes, jar, chimney). User-facing names ↔ code names.
 
 ## Current state
-Pre-alpha. **Phase 1 — the keystone.** Lane A (workspace + schema + `Handler` trait + engine
-orchestration) is scaffolded but **NOT yet compiled** (no Rust toolchain on the dev box; target
-is Windows). Leaves are `todo!()`. Next: implement `SqliteStore` SQL + the profile parser, get
-`cargo check` green, then fan out the handlers.
+Pre-alpha. **Phase 1 — the keystone. Milestone 2 reached: the transaction engine compiles and is
+proven.** `cargo check` + `clippy -D warnings` clean, **13/13 tests green** on Rust 1.96.0 (Linux).
+
+Built + tested: the state engine ([engine.rs](./crates/candylane-core/src/engine.rs)), `SqliteStore`
+([store.rs](./crates/candylane-core/src/store.rs)), the profile parser
+([profile.rs](./crates/candylane-core/src/profile.rs)), the `Handler`/`StateStore`/`WingetExecutor`
+contracts, the schema, CI, `deny.toml`. Engine tests run against fakes (`FakeStore`/`FakeHandler`),
+so the orchestration logic (pull / rollback / reconcile-skipped / bounded-rollback / idempotency) is
+verified — but against fakes, not real I/O.
+
+Still stubbed (`todo!()`): the three real handlers (winget/dotfile/script — Lanes B/C/D), a
+`SqliteStore` round-trip test (the DB layer compiles but isn't exercised yet), `synthesize_undo`
+(reconcile applied-path; its test is `#[should_panic]`), crypto ACL (Lane E), `preflight`/
+`reboot_pending`, and the CLI command bodies (Lane F). Next Linux-runnable target: the dotfile +
+script handlers + a real `pull`/`revert` vertical slice (winget waits for Windows).
 
 ## The prime directive
 Phase 1 must be **surgical**. The acceptance bar, non-negotiable:
@@ -116,6 +128,11 @@ rustfmt + clippy clean (`-D warnings`), edition 2021. Explicit over clever. DRY 
 Errors via `anyhow` now → `thiserror` taxonomy as it settles. ASCII diagrams in comments for state
 machines and multi-step pipelines (engine, handlers); keep them current — stale diagrams mislead.
 
+**Naming ([VOCABULARY.md](./VOCABULARY.md)):** user-facing "box" = the code `Profile` struct
+(never `Box` — std conflict). "chimney" = the secrets subsystem (can be the real module name).
+Theme nouns in UX/docs; keep verbs and security primitives plain in code and CLI.
+
 ## Not yet wired (don't assume)
-CI, `SECURITY.md` / `THREAT_MODEL.md` (Phase 0 todo, before feature code), the distribution pipeline
-(GitHub Releases + signed installer, rustup-init model), and the Rust toolchain on this box.
+The distribution pipeline (GitHub Releases + signed installer, rustup-init model), the Hyper-V
+clean-VM E2E harness, the real handlers, and the crypto ACL. (CI, SECURITY/THREAT_MODEL, a pinned
+1.96.0 toolchain, and a green build/test are now in place.)

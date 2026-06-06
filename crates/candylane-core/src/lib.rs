@@ -9,8 +9,8 @@ pub mod handler;
 pub mod store;
 pub mod types;
 
-// pub mod profile;            // Lane A tail: TOML parse → Vec<Item>
-// pub mod handlers { pub mod winget; pub mod dotfile; pub mod script; }  // Lanes B/C/D
+pub mod profile; // Lane A tail: TOML parse → Vec<Item>
+                 // pub mod handlers { pub mod winget; pub mod dotfile; pub mod script; }  // Lanes B/C/D
 
 pub use handler::{Handler, RawOutput, WingetExecutor};
 pub use types::*;

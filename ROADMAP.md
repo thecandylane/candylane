@@ -44,11 +44,11 @@ BOOT LAYER (v4+)        bootable USB / OS install / pre-staged profiles
 *Make the project buildable, testable, and trustworthy from commit one.*
 
 - [ ] Register domains (`candylane.sh`, `.io`, `.dev`) + trademark check
-- [ ] Rust cargo workspace: `candylane-cli`, `candylane-core`, `candylane-profile`, `candylane-crypto`
-- [ ] CI from day one: build, test, lint, `cargo-audit`, `cargo-deny`
-- [ ] Reproducible builds: pinned deps, locked toolchain (`rust-toolchain.toml`)
-- [ ] `SECURITY.md` and `THREAT_MODEL.md` written **before** feature code
-- [ ] Public manifesto committed (anchors the ethos so it can't drift)
+- [x] Rust cargo workspace: `candylane-cli`, `candylane-core` (profile folded in per Decision #1), `candylane-crypto`
+- [x] CI from day one: build, test, lint, `cargo-audit`, `cargo-deny`
+- [x] Reproducible builds: pinned deps (`Cargo.lock`), locked toolchain (`rust-toolchain.toml` @ 1.96.0)
+- [x] `SECURITY.md` and `THREAT_MODEL.md` written **before** feature code
+- [x] Public manifesto committed (anchors the ethos so it can't drift)
 - [ ] Clean-VM test harness (Hyper-V or QEMU, snapshot/restore automation)
 
 **Exit:** `cargo build` ships a signed `.exe` that runs and exits cleanly on a fresh Win 11 VM. It does nothing yet — but the scaffolding is solid.

@@ -52,12 +52,9 @@ impl<'a> Engine<'a> {
     pub fn pull(&mut self, profile: &Profile) -> Result<()> {
         self.preflight()?; // winget present? reboot already pending? (abort early)
 
-        let op = self.store.begin_op(
-            OpKind::Pull,
-            Some(&profile.name),
-            Some(&profile.hash),
-            None,
-        )?;
+        let op =
+            self.store
+                .begin_op(OpKind::Pull, Some(&profile.name), Some(&profile.hash), None)?;
         let backups_dir = self.backups_root.join(op.to_string());
 
         for (i, item) in profile.items.iter().enumerate() {
@@ -69,35 +66,47 @@ impl<'a> Engine<'a> {
             match handler.plan(item, &probe)? {
                 // Already satisfied — record a no-op so history is complete (idempotency).
                 None => {
-                    self.store.insert_action(op, seq, &NewAction {
-                        handler: item.handler_kind(),
-                        target,
-                        before: probe.0,
-                        undo_kind: UndoKind::Noop,
-                        status: ActionStatus::Skipped,
-                    })?;
+                    self.store.insert_action(
+                        op,
+                        seq,
+                        &NewAction {
+                            handler: item.handler_kind(),
+                            target,
+                            before: probe.0,
+                            undo_kind: UndoKind::Noop,
+                            status: ActionStatus::Skipped,
+                        },
+                    )?;
                 }
                 Some(planned) => {
-                    let aid = self.store.insert_action(op, seq, &NewAction {
-                        handler: planned.handler,
-                        target: planned.target.clone(),
-                        before: planned.before.clone(),
-                        undo_kind: planned.undo_kind,
-                        status: ActionStatus::Pending, // intent BEFORE apply
-                    })?;
+                    let aid = self.store.insert_action(
+                        op,
+                        seq,
+                        &NewAction {
+                            handler: planned.handler,
+                            target: planned.target.clone(),
+                            before: planned.before.clone(),
+                            undo_kind: planned.undo_kind,
+                            status: ActionStatus::Pending, // intent BEFORE apply
+                        },
+                    )?;
 
                     let ctx = self.ctx(&backups_dir);
                     match handler.apply(&planned, &ctx) {
                         // apply() re-probed internally: Ok means the system really changed.
                         Ok(applied) => {
-                            self.store.set_action_applied(aid, &applied.after, &applied.undo)?;
+                            self.store
+                                .set_action_applied(aid, &applied.after, &applied.undo)?;
                             // A package may have set reboot-pending. If so, abort before it
                             // poisons the next install (Finding #5). The action is already
                             // recorded applied, so rollback can undo it.
                             if self.reboot_pending()? {
                                 self.rollback(op)?;
                                 self.finalize_op(op)?;
-                                anyhow::bail!("reboot pending after applying {:?} — rolled back", planned.target);
+                                anyhow::bail!(
+                                    "reboot pending after applying {:?} — rolled back",
+                                    planned.target
+                                );
                             }
                         }
                         Err(e) => {
@@ -130,7 +139,8 @@ impl<'a> Engine<'a> {
             while attempts < self.max_undo_attempts {
                 match handler.undo(&action, &ctx) {
                     Ok(()) => {
-                        self.store.set_action_status(action.id, ActionStatus::Reverted)?;
+                        self.store
+                            .set_action_status(action.id, ActionStatus::Reverted)?;
                         reverted = true;
                         break;
                     }
@@ -141,7 +151,8 @@ impl<'a> Engine<'a> {
             }
             if !reverted {
                 // Give up on THIS action, keep rolling back the rest.
-                self.store.set_action_status(action.id, ActionStatus::UndoFailed)?;
+                self.store
+                    .set_action_status(action.id, ActionStatus::UndoFailed)?;
             }
         }
         Ok(())
@@ -174,7 +185,8 @@ impl<'a> Engine<'a> {
                 let _ = &real;
                 todo!("handler.synthesize_undo(&action.target, &real) -> (after, undo); set_action_applied");
             } else {
-                self.store.set_action_status(action.id, ActionStatus::Skipped)?;
+                self.store
+                    .set_action_status(action.id, ActionStatus::Skipped)?;
             }
         }
         Ok(())
@@ -183,9 +195,9 @@ impl<'a> Engine<'a> {
     /// Record the honest operation outcome after a rollback.
     fn finalize_op(&mut self, op: i64) -> Result<()> {
         let statuses = self.store.action_statuses(op)?;
-        let status = if statuses.iter().any(|s| *s == ActionStatus::UndoFailed) {
+        let status = if statuses.contains(&ActionStatus::UndoFailed) {
             OpStatus::RevertFailed
-        } else if statuses.iter().any(|s| *s == ActionStatus::Applied) {
+        } else if statuses.contains(&ActionStatus::Applied) {
             OpStatus::PartiallyReverted
         } else {
             OpStatus::Reverted

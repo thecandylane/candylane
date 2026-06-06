@@ -9,7 +9,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-rust-version = "1.77"
+rust-version = "1.85"   # edition2024-era deps need >=1.85; bump if a dep demands more
 
 [workspace.dependencies]
 anyhow       = "1"
@@ -22,7 +22,7 @@ indicatif    = "0.17"
 fs2          = "0.4"                                            # cross-platform advisory file lock
 sha2         = "0.10"
 time         = { version = "0.3", features = ["formatting", "macros"] }  # RFC3339 timestamps
-ed25519-dalek = "2"
+ed25519-dalek = { version = "2", features = ["rand_core"] }   # rand_core = SigningKey::generate
 rand         = "0.8"
 
 # Internal crates

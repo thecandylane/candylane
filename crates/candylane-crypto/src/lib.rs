@@ -27,7 +27,10 @@ impl Identity {
     pub fn generate() -> Result<Self> {
         let path = Self::key_path()?;
         if path.exists() {
-            anyhow::bail!("identity already exists at {} — refusing to clobber", path.display());
+            anyhow::bail!(
+                "identity already exists at {} — refusing to clobber",
+                path.display()
+            );
         }
         let signing = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
         if let Some(dir) = path.parent() {
@@ -48,8 +51,13 @@ impl Identity {
         assert_owner_only(&path)
             .with_context(|| format!("private key {} has unsafe permissions", path.display()))?;
         let bytes = std::fs::read(&path)?;
-        let arr: [u8; 32] = bytes.as_slice().try_into().context("malformed key length")?;
-        Ok(Self { signing: ed25519_dalek::SigningKey::from_bytes(&arr) })
+        let arr: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .context("malformed key length")?;
+        Ok(Self {
+            signing: ed25519_dalek::SigningKey::from_bytes(&arr),
+        })
     }
 
     pub fn verifying_key(&self) -> ed25519_dalek::VerifyingKey {

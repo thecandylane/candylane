@@ -5,6 +5,11 @@
 > zero breaks** ([ROADMAP.md](./ROADMAP.md) Phase 1). Everything here is decided.
 > Implementation maps field-for-field and signature-for-signature to what follows.
 
+**Status (2026-06-06):** Lane A landed. The engine, `SqliteStore`, profile parser, schema, and CI
+compile and pass `cargo check` + `clippy -D warnings` + 13 tests on Rust 1.96.0. The engine's
+transaction logic is proven against fakes. Real handlers (winget/dotfile/script), `synthesize_undo`,
+the crypto ACL, and the CLI bodies remain. See [LANE_A_STATUS.md](./LANE_A_STATUS.md).
+
 **v2 changelog (three independent reviews — Claude subagent, Grok, +1 — converged on the
 revert/recover path):** in-flight reconcile after crash; winget success sourced from
 post-install probe, not exit code; rollback-during-rollback is bounded and best-effort;

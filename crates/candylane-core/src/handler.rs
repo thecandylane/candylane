@@ -28,6 +28,21 @@ pub trait Handler {
     /// For BestEffort actions, verify ownership before destroying state
     /// (don't uninstall a package the user manually upgraded — Finding #8).
     fn undo(&self, action: &RecordedAction, ctx: &ApplyCtx) -> Result<()>;
+
+    // ── LOCKED, pending implementation (do under a compiler — see LANE_A_STATUS.md) ──
+    //
+    // The reconcile applied-path leaf (CRITICAL #4). After a crash, `engine::reconcile`
+    // finds an in-flight action whose probe != before — i.e. apply took effect before the
+    // crash. The handler must rebuild the undo recipe from the action's pre-state (`before`)
+    // and the post-crash probed state (`probe`) so rollback can reverse it. Returns the same
+    // shape as `apply` (after + undo recipe).
+    //
+    // Signature is decided; uncomment + implement together with the first real handler
+    // (Lane B) so a compiler verifies it, and update FakeHandler in
+    // tests/engine_transaction.rs + drop the #[should_panic] on the applied-path test.
+    // Adding this OBLIGATES every Handler (winget/dotfile/script) to implement it.
+    //
+    // fn synthesize_undo(&self, target: &Target, before: &Json, probe: &Probe) -> Result<Applied>;
 }
 
 /// Raw result of a winget subprocess. Exit code is recorded but is NOT the
