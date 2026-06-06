@@ -1,0 +1,25 @@
+# candylane/minimal-dev — the canonical Phase 1 box.
+#
+# A deliberately small, fully-reversible box: three winget packages, one dotfile, and one
+# paired post-install tweak (up + down script → `inverse`, zero one-way per Decision #3).
+#
+# Run it (on Windows, once Lane B lands):  candylane pull profiles/minimal-dev/candylane.toml
+# Preview it anywhere:                     candylane diff profiles/minimal-dev/candylane.toml
+#
+# NOTE: the winget packages need a Windows host. On Linux the dotfile + post-install half
+# runs today; winget is Lane B (see docs/FOLLOWUPS.md).
+
+name    = "minimal-dev"
+version = "0.1"
+
+[packages.winget]
+install = ["Git.Git", "Microsoft.VisualStudioCode", "BurntSushi.ripgrep.MSVC"]
+
+[dotfiles]
+[[dotfiles.file]]
+src    = "./home/.gitconfig"
+target = "$HOME/.gitconfig"
+
+[[post_install]]
+run  = "./scripts/example-tweak.ps1"
+undo = "./scripts/example-tweak.undo.ps1"   # REQUIRED — paired undo keeps the box reversible

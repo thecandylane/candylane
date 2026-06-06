@@ -2,70 +2,74 @@
 
 The single in-repo tracker for everything known-but-not-done. Travels with clones (it's tracked),
 so every parallel lane sees the same backlog. Strategic phase work lives in [ROADMAP.md](./ROADMAP.md);
-this file is the tactical list: deferred review findings, stubs, and quality gaps under the current
-phase. Mirror to GitHub Issues after the first push if you want a board — this stays the source of truth.
+this file is the tactical list. Mirror to GitHub Issues after the first push if you want a board —
+this stays the source of truth.
 
-**Status key:** 🔴 open · 🟡 partial · 🟢 done (kept briefly for history) · ⏸ deferred-by-design
-**Updated:** 2026-06-06 (after the Phase 1 vertical slice + adversarial review).
-
----
-
-## A. Deferred review findings (2026-06-06 adversarial review of the vertical slice)
-
-The review confirmed the revert path sound enough to build on; these were consciously deferred (not
-blockers). Severity is the reviewer's.
-
-| ID | Sev | Status | Item | Where | Why it matters / fix |
-|----|-----|--------|------|-------|----------------------|
-| **F8** | Med | 🔴 | `recover()` never writes an `OpKind::Recover` row — the crash recovery has no audit trail and the `OpKind::Recover` variant is currently dead code. | `engine.rs::recover` | History can't show "a crash was recovered." Fix: `begin_op(Recover, parent=op)` around the reconcile+rollback, or stamp the pull op a distinct terminal status. |
-| **F10** | Med | 🔴 | Dotfile backups under `~/.candylane/backups/<op>/` are never cleaned after a successful restore or a terminal op — resource leak **and** lingering copies of the user's original file bytes. | `dotfile.rs::undo`, `engine.rs::finalize_op` | **Do NOT** clean up inside `undo()` — that breaks `undo()` idempotency (a second undo would find the backup gone and bail). Correct fix is **op-level** cleanup at a terminal-clean state (`finalize_op` / after `recover`). |
-| **F11** | Med | 🔴 | No real-store integration test for `recover()` / crash-reconcile — only the fakes (`engine_transaction.rs`) cover it. The `synthesize_undo` → `SqliteStore` round-trip is unproven. | `tests/` | The 10x loop needs crash-recover proven through the real store. Fix: a `vertical_slice`-style test that marks an applied action `pending`, calls `recover()`, asserts honest terminal state + consistent files. |
-| **F12** | Low | 🟡 | `DotfileHandler::expand()` only handles leading `~` and `$HOME`. `${HOME}`, `%APPDATA%`, `$USERPROFILE`, mid-path vars are unhandled. (Leading non-`$HOME` vars are now **rejected**, so it fails loudly rather than deploying to a literal `$FOO` path.) | `dotfile.rs::expand` | Windows path expansion is a real gap for Windows dotfile targets — lands with the Windows work. |
+**Status key:** 🔴 open · 🟡 partial · ⏸ deferred-by-design
+**Updated:** 2026-06-06 (after the "leave no stone unturned" hardening pass).
 
 ---
 
-## B. Phase 1 remaining — Windows / lane work (the other half of the keystone)
+## Resolved 2026-06-06
 
-The cross-platform half (engine, dotfile, script, store, CLI) is proven on Linux. These need a
-Windows host and finish Phase 1.
+The hardening pass closed these (all Linux-tractable; verified by `cargo test` — 55 green — + clippy
+`-D warnings` + fmt). Kept here for the trail; prune on the next docs pass.
+
+- **F8** — `recover()` now records an `OpKind::Recover` op linked to the interrupted pull (audit trail).
+- **F10** — `finalize_op` removes an op's backup directory on a *fully clean* revert (kept on
+  RevertFailed/PartiallyReverted for manual retry). Done at op level, not in `undo()`, so undo stays idempotent.
+- **F11** — real-store crash-recover test (`tests/vertical_slice.rs::recover_after_simulated_crash_through_real_store`).
+- **C-LOCK** — `core::lock::Lock` (fs2 advisory lock); `pull`/`revert`/`recover` are single-writer, fail-fast. Crash-safe via OS flock (no PID check needed).
+- **C-ATOMIC** — dotfile target/backup/restore writes go through `atomic_write` (temp + `rename`); no torn-file window.
+- **E-ONEWAY** — engine-level test that a one-way action ends `UndoSkipped`, never `Reverted`.
+- **B-CLI** — `history` (via `StateStore::list_operations`) and `status` (drift check via re-probe) are implemented.
+- **B-LEXICON** — CLI help text + value names use the lexicon (`<BOX>`, jar); README + docs already did.
+- **B-PROFILE** — `profiles/minimal-dev/` shipped (box + sample dotfile + paired up/down scripts).
+
+---
+
+## A. Open review findings
+
+| ID | Sev | Status | Item | Where | Notes |
+|----|-----|--------|------|-------|-------|
+| **F12** | Low | 🟡 | `DotfileHandler::expand()` only handles leading `~` and `$HOME`. `${HOME}`, `%APPDATA%`, `$USERPROFILE`, mid-path vars are unhandled (leading unknown `$VAR` is now *rejected*, so it fails loudly). | `dotfile.rs::expand` | Windows path-var expansion — lands with the Windows work. |
+
+---
+
+## B. Phase 1 remaining — Windows-gated (cannot be done without a Windows host)
 
 | ID | Status | Item | Where | Notes |
 |----|--------|------|-------|-------|
-| **B-WINGET** | 🔴 | **WingetHandler** (Lane B) — all five trait methods `todo!()`. | `handlers/winget.rs` | Needs a real `WingetExecutor` (`winget.exe` with `--accept-source-agreements --accept-package-agreements --silent`), probe via `winget list` (success from probe, never exit code), `best_effort` undo + recorded managed-PATH cleanup, and ownership check before uninstall. Windows-only. |
-| **B-ACL** | 🔴 | **Crypto owner-only ACL** (Lane E / CRITICAL #3). | `candylane-crypto/src/lib.rs` | Windows `windows-acl` carve-out is `todo!()`; unix is a 0600 fallback. Must **set + assert** owner-only ACL on every key load — not best-effort. The one sanctioned `windows-rs` dependency. |
-| **B-PREFLIGHT** | 🟡 | `preflight()` / `reboot_pending()` real Windows impl. | `engine.rs` | unix is cfg-gated to `Ok(())` / `false` so the engine runs off-Windows. Windows needs: winget-present check; CBS `RebootPending` + Session Manager `PendingFileRenameOperations`. |
-| **B-CLI** | 🟡 | CLI `history` + `status`. | `candylane-cli/src/main.rs` | Currently `eprintln!("not yet implemented")` + `Ok(())`. `history` needs a `StateStore::list_operations`; `status` validates machine state vs the state DB. |
-| **B-INIT** | 🟡 | `candylane init` — full `~/.candylane/` setup. | `candylane-cli/src/main.rs` | Keypair generation works; needs the full directory layout + (Windows) the owner-only ACL from B-ACL. |
-| **B-PROFILE** | 🔴 | Ship `candylane/minimal-dev` as a bundled official profile. | (new) | The TOML exists in the spec + parser tests; not yet a shipped artifact. |
-| **B-LEXICON** | 🟡 | CLI help text + arg names still use code-names (`profile`, `vault`); align user-facing strings to the lexicon (`box`, `chimney`) per [VOCABULARY.md](./VOCABULARY.md). | `candylane-cli/src/main.rs` | README + docs already use the lexicon; the binary's `--help` lags. Do before first release. |
+| **B-WINGET** | 🔴 | **WingetHandler** (Lane B) — all five trait methods `todo!()`. | `handlers/winget.rs` | Real `WingetExecutor` (`winget.exe` + `--accept-*` `--silent`), probe via `winget list` (success from probe, never exit code), `best_effort` undo + recorded PATH cleanup, ownership check before uninstall. |
+| **B-ACL** | 🔴 | **Crypto owner-only ACL** (Lane E / CRITICAL #3). | `candylane-crypto/src/lib.rs` | Windows `windows-acl` carve-out `todo!()`; unix is a 0600 fallback. Must set + assert owner-only on every load. |
+| **B-PREFLIGHT** | 🟡 | `preflight()` / `reboot_pending()` real Windows impl. | `engine.rs` | unix cfg-gated to `Ok(())` / `false`. Windows: winget-present check; CBS `RebootPending` + `PendingFileRenameOperations`. |
+| **B-INIT** | 🟡 | `candylane init` — full `~/.candylane/` setup + key ACL. | `candylane-cli/src/main.rs` | Generates the keypair today; the jar dirs are created lazily on first pull/lock. Windows ACL comes with B-ACL. |
 
 ---
 
-## C. Keystone quality & acceptance (the exit bar + robustness the spec calls for)
+## C. Keystone acceptance
 
 | ID | Status | Item | Where | Notes |
 |----|--------|------|-------|-------|
-| **C-HYPERV** | 🔴 | **Hyper-V 10x clean-VM E2E loop** (`Checkpoint-VM` / `Restore-VMSnapshot`). | (new, Lane G) | The actual Phase-1 acceptance bar: fresh Win11 → pull → functional-clean → revert → vanilla, ×10. The Linux half is proven; this is unproven. Phase 1 is **not** done without it. |
-| **C-LOCK** | 🔴 | Single-writer lockfile (`fs2`, fail-fast, PID stale-check). | `engine.rs` / CLI | Spec calls it an "obvious call." Not implemented — two concurrent `candylane` runs could corrupt the state DB. |
-| **C-ATOMIC** | 🔴 | Atomic writes for dotfile + DB writes (`rust-atomicwrites`). | `dotfile.rs::apply`, `store.rs` | `apply()` uses `std::fs::write` — a crash mid-write leaves a torn target. Spec calls for atomic writes + WAL. |
+| **C-HYPERV** | 🔴 | **Hyper-V 10x clean-VM E2E loop** (`Checkpoint-VM` / `Restore-VMSnapshot`). | (Lane G, Windows host) | The actual Phase-1 acceptance bar: fresh Win11 → pull → functional-clean → revert → vanilla, ×10. The Linux half is proven; this is not. Phase 1 is **not** done without it. |
 | **C-PATCH** | ⏸ | Registry/PATH delta capture for "vanilla." | — | Deferred-by-design to Phase 3 (rides the debloat engine's registry machinery) — Decision #7. Tracked, not forgotten. |
 
 ---
 
-## D. Phase 0 leftovers (foundation, non-code)
+## D. Phase 0 leftovers (non-code, external)
 
 | ID | Status | Item | Notes |
 |----|--------|------|-------|
-| **D-DOMAIN** | 🔴 | Register `candylane.sh` / `.io` / `.dev` + trademark check. | ROADMAP Phase 0. |
-| **D-DIST** | 🔴 | Signed `.exe` distribution / installer pipeline (rustup-init model). | ROADMAP Phase 0 exit; relates to T8/T9 in [THREAT_MODEL.md](./THREAT_MODEL.md). |
+| **D-DOMAIN** | 🔴 | Register `candylane.sh` / `.io` / `.dev` + trademark check. | Owner is handling on the side. |
+| **D-DIST** | 🔴 | Signed `.exe` distribution / installer pipeline (rustup-init model). | Relates to T8/T9 in [THREAT_MODEL.md](./THREAT_MODEL.md). |
+| **LICENSE** | 🔴 | Choose + add a LICENSE (README says "not yet chosen"). | Pick before the first public push. |
 
 ---
 
-## E. Smaller test-coverage gaps
+## E. Smaller gaps
 
 | ID | Status | Item | Notes |
 |----|--------|------|-------|
-| **E-ONEWAY** | 🔴 | No E2E proving a `OneWay` action ends `UndoSkipped` through the real engine. | Unit-covered in `script.rs`; the engine-level path (rollback → `UndoSkipped`) is logic-only. |
 | **E-T14** | 🟡 | THREAT_MODEL **T14**: winget arg-array validation pending (handler not built). | Folds into **B-WINGET**. Dotfile traversal guard already landed. |
 
 ---
@@ -73,6 +77,6 @@ Windows host and finish Phase 1.
 ## How to use this file
 
 - When you start an item, change its status and (optionally) note the branch/PR.
-- When you finish one, flip it 🟢 and delete it on the next docs pass (history lives in git).
+- When you finish one, move it to "Resolved" with a one-line note; prune the Resolved block on the next docs pass (history lives in git).
 - New gaps a review or build surfaces go here the same day — a silent gap reads as "covered" when it isn't.
 - Keep [CLAUDE.md](../CLAUDE.md) "Current state" and [ROADMAP.md](./ROADMAP.md) Phase 1 in sync with this list.

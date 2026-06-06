@@ -8,7 +8,7 @@
 **Status (2026-06-06):** The cross-platform vertical slice is built and proven on Linux. Engine,
 `SqliteStore` (+ round-trip test), profile parser, **DotfileHandler** (CRITICAL #2), **ScriptHandler**
 (CRITICAL #1), `HandlerRegistry`, `synthesize_undo`, schema, CI, and a wired CLI
-(`pull`/`revert`/`diff`/`recover`) compile and pass `cargo test` (**52 green**) + `clippy -D warnings`
+(`pull`/`revert`/`diff`/`recover`/`history`/`status`) compile and pass `cargo test` (**55 green**) + `clippy -D warnings`
 + `fmt` on Rust 1.96.0. [`tests/vertical_slice.rs`](../crates/candylane-core/tests/vertical_slice.rs)
 proves `pull` → `revert` → functional-clean (delete + sha256-verified restore) with real handlers and
 the real store. Remaining: **WingetHandler** (Lane B, Windows), the crypto owner-only ACL (Lane E,
@@ -289,7 +289,7 @@ run  = "./scripts/example-tweak.ps1"
 undo = "./scripts/example-tweak.undo.ps1"   # REQUIRED (certified profile: zero one_way)
 ```
 
-## Test spec (write alongside each handler — ~32 unit + 5 E2E; **52 unit/integration green on Linux today**, Hyper-V E2E still to come)
+## Test spec (write alongside each handler — ~32 unit + 5 E2E; **55 unit/integration green on Linux today**, Hyper-V E2E still to come)
 
 ```
 winget   apply: already-installed→skip · ok→best_effort undo

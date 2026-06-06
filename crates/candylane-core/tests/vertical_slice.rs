@@ -259,6 +259,161 @@ target = "{target}"
     assert_op_reverted(&db_path, op_id);
 }
 
+/// E-ONEWAY: a one-way script (run, no undo) must end `UndoSkipped`, never `Reverted` — the
+/// status must not claim a reversal that didn't happen. The script's effect persists; the op
+/// still finalizes `reverted` (one-way residue is per-action honesty, not an op failure).
+#[cfg(unix)]
+#[test]
+fn one_way_script_is_undo_skipped_not_reverted() {
+    use candylane_core::ActionStatus;
+
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let marker = root.join("oneway-marker");
+    assert!(!marker.exists());
+    let run_cmd = format!("touch {}", marker.display());
+    let db_path = root.join("state.db");
+    let backups_root = root.join("backups");
+
+    // A post_install with NO undo → one-way.
+    let profile_toml = format!("name = \"oneway\"\n\n[[post_install]]\nrun = \"{run_cmd}\"\n");
+    let parsed = profile::parse_str(&profile_toml, "oneway").unwrap();
+
+    let op_id;
+    {
+        let mut store = SqliteStore::open(&db_path).unwrap();
+        let handlers = Handlers::new();
+        let mut engine = Engine {
+            store: &mut store,
+            handlers: &handlers,
+            backups_root: backups_root.clone(),
+            timeout: Duration::from_secs(10),
+            max_undo_attempts: 3,
+        };
+        engine.pull(&parsed).expect("pull should succeed");
+        op_id = store.last_applied_op().unwrap().expect("an applied pull");
+    }
+    assert!(marker.exists(), "the one-way script must have run");
+
+    {
+        let mut store = SqliteStore::open(&db_path).unwrap();
+        let handlers = Handlers::new();
+        let mut engine = Engine {
+            store: &mut store,
+            handlers: &handlers,
+            backups_root: backups_root.clone(),
+            timeout: Duration::from_secs(10),
+            max_undo_attempts: 3,
+        };
+        engine.revert_last().expect("revert should succeed");
+    }
+
+    // One-way: the effect persists, the action is UndoSkipped (NOT Reverted).
+    assert!(marker.exists(), "a one-way effect must NOT be reversed");
+    let store = SqliteStore::open(&db_path).unwrap();
+    let statuses = store.action_statuses(op_id).unwrap();
+    assert!(
+        statuses.contains(&ActionStatus::UndoSkipped),
+        "the one-way action must be UndoSkipped; got {statuses:?}"
+    );
+    assert!(
+        !statuses.contains(&ActionStatus::Reverted),
+        "a one-way action must never be recorded Reverted; got {statuses:?}"
+    );
+    assert_op_reverted(&db_path, op_id);
+}
+
+/// F11: crash-recover through the REAL store. Pull a dotfile, then rewind the op + action to
+/// `pending` (as a crash mid-apply would leave them) WITHOUT undoing the file the apply wrote,
+/// then `recover()`. Reconcile must see probe != before, synthesize the undo via the real
+/// `SqliteStore` round-trip, roll back to clean, and record an `OpKind::Recover` audit op (F8).
+#[cfg(unix)]
+#[test]
+fn recover_after_simulated_crash_through_real_store() {
+    use candylane_core::OpKind;
+
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let target = root.join("dest").join(".cfg");
+    assert!(!target.exists());
+    let src = root.join("src");
+    std::fs::write(&src, b"recovered content").unwrap();
+    let db_path = root.join("state.db");
+    let backups_root = root.join("backups");
+
+    let profile_toml = format!(
+        "name = \"crash\"\n\n[dotfiles]\n[[dotfiles.file]]\nsrc = \"{}\"\ntarget = \"{}\"\n",
+        src.display(),
+        target.display()
+    );
+    let parsed = profile::parse_str(&profile_toml, "crash").unwrap();
+
+    // Normal pull: the file is created, op applied.
+    let op_id;
+    {
+        let mut store = SqliteStore::open(&db_path).unwrap();
+        let handlers = Handlers::new();
+        let mut engine = Engine {
+            store: &mut store,
+            handlers: &handlers,
+            backups_root: backups_root.clone(),
+            timeout: Duration::from_secs(10),
+            max_undo_attempts: 3,
+        };
+        engine.pull(&parsed).expect("pull should succeed");
+        op_id = store.last_applied_op().unwrap().expect("an applied pull");
+    }
+    assert!(target.exists(), "pull created the dotfile");
+
+    // Simulate a crash mid-apply: intent (pending) was written, outcome not committed — but
+    // the file the apply already wrote is still on disk.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE operations SET status='pending', finished_at=NULL WHERE id=?1",
+            rusqlite::params![op_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE actions SET status='pending' WHERE op_id=?1",
+            rusqlite::params![op_id],
+        )
+        .unwrap();
+    }
+
+    // Recover: probe(exists) != before(absent) → synthesize a delete recipe → rollback deletes.
+    {
+        let mut store = SqliteStore::open(&db_path).unwrap();
+        let handlers = Handlers::new();
+        let mut engine = Engine {
+            store: &mut store,
+            handlers: &handlers,
+            backups_root: backups_root.clone(),
+            timeout: Duration::from_secs(10),
+            max_undo_attempts: 3,
+        };
+        engine.recover().expect("recover should succeed");
+    }
+
+    assert!(
+        !target.exists(),
+        "recover must roll the interrupted pull back to clean"
+    );
+    assert_eq!(
+        op_status_text(&db_path, op_id),
+        "reverted",
+        "the interrupted pull must end 'reverted'"
+    );
+
+    // F8: the recovery was recorded as its own op for the audit trail.
+    let store = SqliteStore::open(&db_path).unwrap();
+    let ops = store.list_operations().unwrap();
+    assert!(
+        ops.iter().any(|o| o.kind == OpKind::Recover),
+        "a Recover op must be recorded for the audit trail"
+    );
+}
+
 /// Confirm the operations row reached `Reverted`. Read it directly via a fresh store +
 /// a small query helper that re-derives status from action_statuses is not enough — we
 /// want the op row itself. We open the DB and check via the public store surface: an op

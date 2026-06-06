@@ -62,15 +62,15 @@ BOOT LAYER (v4+)        bootable USB / OS install / pre-staged profiles
 - [x] Transactional state DB (SQLite at `~/.candylane/state.db`), every action logged with before/after hashes where possible
 - [x] `candylane diff` — show what `pull` would do, without doing it
 - [x] `candylane revert` — undo the last pull from the state DB
-- [ ] `candylane history` — list past operations *(CLI stub: "not yet implemented")*
-- [ ] One hardcoded official profile: `candylane/minimal-dev` *(the TOML exists in the spec + parser tests; not yet shipped as a bundled profile)*
+- [x] `candylane history` — list past operations
+- [x] One hardcoded official profile: `candylane/minimal-dev` *(shipped at [`profiles/minimal-dev/`](../profiles/minimal-dev/))*
 
-**Progress (2026-06-06):** The cross-platform half is proven on Linux — `pull`/`revert`/`diff` run the
-real engine against dotfile + script profiles with a SQLite state DB, and the money test
-([`tests/vertical_slice.rs`](../crates/candylane-core/tests/vertical_slice.rs)) does pull → revert →
-functional-clean (both undo paths). Remaining for the Phase-1 exit: **WingetHandler** (Lane B, Windows),
-`candylane history`, the bundled `minimal-dev` profile, and the **Hyper-V 10x loop** — the actual
-acceptance bar. Full gap list: [FOLLOWUPS.md](./FOLLOWUPS.md).
+**Progress (2026-06-06):** The cross-platform half is proven on Linux — `pull`/`revert`/`diff`/`history`/`status`
+run the real engine against dotfile + script profiles with a SQLite state DB, a single-writer lock, and
+atomic writes; the money test ([`tests/vertical_slice.rs`](../crates/candylane-core/tests/vertical_slice.rs))
+does pull → revert → functional-clean (both undo paths) and crash → recover → clean. Remaining for the
+Phase-1 exit: **WingetHandler** (Lane B, Windows) and the **Hyper-V 10x loop** — the actual acceptance bar.
+Full gap list: [FOLLOWUPS.md](./FOLLOWUPS.md).
 
 **Exit:** Fresh Win 11 VM → install → `pull` → 5 minutes later it's the machine you wanted → `revert` → back to vanilla. Run this loop **10 times in a row** without a single break. *This is the one phase that must be perfect.*
 

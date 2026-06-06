@@ -18,7 +18,7 @@ Read before non-trivial work:
 
 ## Current state
 Pre-alpha. **Phase 1 — the keystone. The cross-platform half of the vertical slice is built and
-proven on Linux.** `cargo test` **52 green**, `clippy -D warnings` + `fmt` clean on Rust 1.96.0.
+proven on Linux.** `cargo test` **55 green**, `clippy -D warnings` + `fmt` clean on Rust 1.96.0.
 
 Built + tested end-to-end (real I/O, no fakes): `candylane pull` → `revert` against a dotfile +
 script profile — [tests/vertical_slice.rs](./crates/candylane-core/tests/vertical_slice.rs) proves
@@ -30,12 +30,13 @@ and **ScriptHandler** (timeout group-kill, CRITICAL #1) in
 ([registry.rs](./crates/candylane-core/src/registry.rs)), `synthesize_undo` (the crash-reconcile
 leaf), the profile parser, schema, and CI. CLI `pull`/`revert`/`diff`/`recover` are wired.
 
-Still stubbed / Windows-only: **WingetHandler** (Lane B — `todo!()`, needs a Windows host), the
-**crypto owner-only ACL** (Lane E / CRITICAL #3 — `windows-acl` carve-out `todo!()`; unix is a 0600
-fallback), engine `preflight`/`reboot_pending` (Windows real impl `todo!()`; unix cfg-gated to
-no-op), and CLI `history`/`status`. The keystone **Hyper-V 10x clean-VM loop is not built** — the
-Linux half is proven, the Windows acceptance bar is not. **All known gaps + review follow-ups are
-tracked in [FOLLOWUPS.md](./docs/FOLLOWUPS.md).**
+Also working: `diff`/`history`/`status`, a single-writer lockfile, atomic dotfile writes, and a
+recorded crash-recovery (`recover` logs an `OpKind::Recover` audit op). Still stubbed / Windows-only:
+**WingetHandler** (Lane B — `todo!()`, needs a Windows host), the **crypto owner-only ACL** (Lane E /
+CRITICAL #3 — `windows-acl` carve-out `todo!()`; unix is a 0600 fallback), and engine
+`preflight`/`reboot_pending` (Windows real impl `todo!()`; unix cfg-gated to no-op). The keystone
+**Hyper-V 10x clean-VM loop is not built** — the Linux half is proven, the Windows acceptance bar is
+not. **All known gaps + review follow-ups are tracked in [FOLLOWUPS.md](./docs/FOLLOWUPS.md).**
 
 ## The prime directive
 Phase 1 must be **surgical**. The acceptance bar, non-negotiable:
@@ -84,7 +85,7 @@ Framework: **Rust built-in test harness (`cargo test`)**.
 cargo test --workspace                       # unit + integration
 ```
 Goal: 100% coverage of handlers + engine. Case list lives in [PHASE1_ARCHITECTURE.md](./docs/PHASE1_ARCHITECTURE.md)
-(**52 unit/integration tests green on Linux today**; the Hyper-V E2E loop is still to come). Handlers
+(**55 unit/integration tests green on Linux today**; the Hyper-V E2E loop is still to come). Handlers
 are unit-tested off-Windows; winget will use the `WingetExecutor` seam (inject a fake). The keystone
 E2E is the Hyper-V 10x loop (`Checkpoint-VM`/`Restore-VMSnapshot`), Windows-host only.
 

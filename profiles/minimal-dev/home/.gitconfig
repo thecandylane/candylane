@@ -1,0 +1,11 @@
+# Example dotfile shipped with candylane/minimal-dev.
+# Edit before pulling — or point the box at your own dotfiles.
+[user]
+	name = Your Name
+	email = you@example.com
+[init]
+	defaultBranch = main
+[core]
+	autocrlf = input
+[pull]
+	rebase = true

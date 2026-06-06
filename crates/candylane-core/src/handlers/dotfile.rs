@@ -128,10 +128,9 @@ fn backup_path(backups_dir: &Path, target_path_str: &str) -> PathBuf {
 /// partial. The caller must ensure `path`'s parent directory already exists.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| anyhow::anyhow!("atomic_write: target has no file name: {}", path.display()))?;
+    let file_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+        anyhow::anyhow!("atomic_write: target has no file name: {}", path.display())
+    })?;
     let tmp = parent.join(format!(".{file_name}.candylane-tmp"));
     std::fs::write(&tmp, bytes)
         .with_context(|| format!("atomic_write: temp write failed at {}", tmp.display()))?;
