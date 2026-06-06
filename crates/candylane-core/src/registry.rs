@@ -1,9 +1,10 @@
 //! The concrete [`HandlerRegistry`] used in production: one of each handler, dispatched
 //! by [`HandlerKind`].
 //!
-//! Built once at startup. On the Linux vertical slice only the dotfile + script handlers
-//! are ever reached; the winget handler is a stub (Lane B) and would `todo!()` if a winget
-//! item were dispatched to it — but no Linux profile contains winget items.
+//! Built once at startup. The winget handler shells `winget.exe` (Windows); on a
+//! non-Windows host its executor is a loud stub, so dispatching a winget item off-Windows
+//! errors rather than silently misbehaving. The dotfile + script handlers are
+//! cross-platform.
 
 use crate::engine::HandlerRegistry;
 use crate::handler::Handler;

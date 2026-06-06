@@ -18,7 +18,10 @@ Read before non-trivial work:
 
 ## Current state
 Pre-alpha. **Phase 1 — the keystone. The cross-platform half of the vertical slice is built and
-proven on Linux.** `cargo test` **55 green**, `clippy -D warnings` + `fmt` clean on Rust 1.96.0.
+proven on Linux; WingetHandler is now real and proven on live winget.** `cargo test` **72 green**,
+`clippy -D warnings` + `fmt` clean on Rust 1.96.0 (Linux). The dev box is a Win11 laptop w/ WSL2 —
+it **is** a Windows host: winget + a native msvc `cargo build` of `candylane.exe` run from WSL
+(rsync→`C:` first; UNC blocked). Windows clippy gate is currently red (F13, unix-gated test cfg).
 
 Built + tested end-to-end (real I/O, no fakes): `candylane pull` → `revert` against a dotfile +
 script profile — [tests/vertical_slice.rs](./crates/candylane-core/tests/vertical_slice.rs) proves
@@ -31,9 +34,12 @@ and **ScriptHandler** (timeout group-kill, CRITICAL #1) in
 leaf), the profile parser, schema, and CI. CLI `pull`/`revert`/`diff`/`recover` are wired.
 
 Also working: `diff`/`history`/`status`, a single-writer lockfile, atomic dotfile writes, and a
-recorded crash-recovery (`recover` logs an `OpKind::Recover` audit op). Still stubbed / Windows-only:
-**WingetHandler** (Lane B — `todo!()`, needs a Windows host), the **crypto owner-only ACL** (Lane E /
-CRITICAL #3 — `windows-acl` carve-out `todo!()`; unix is a 0600 fallback), and engine
+recorded crash-recovery (`recover` logs an `OpKind::Recover` audit op). **WingetHandler** (Lane B) is
+real: shells `winget.exe` through the `WingetExecutor` seam, reads truth from `winget list` (never
+the exit code), `best_effort` undo with an ownership guard, 17 fake-driven unit tests green on Linux
+**and** msvc, plus a live `#[cfg(windows)]` round-trip (`tests/winget_live.rs`: absent → installed →
+absent, cross-checked vs raw winget). Still stubbed / Windows-only: the **crypto owner-only ACL**
+(Lane E / CRITICAL #3 — `windows-acl` carve-out `todo!()`; unix is a 0600 fallback), and engine
 `preflight`/`reboot_pending` (Windows real impl `todo!()`; unix cfg-gated to no-op). The keystone
 **Hyper-V 10x clean-VM loop is not built** — the Linux half is proven, the Windows acceptance bar is
 not. **All known gaps + review follow-ups are tracked in [FOLLOWUPS.md](./docs/FOLLOWUPS.md).**
@@ -139,7 +145,8 @@ Theme nouns in UX/docs; keep verbs and security primitives plain in code and CLI
 
 ## Not yet wired (don't assume)
 The distribution pipeline (GitHub Releases + signed installer, rustup-init model), the Hyper-V
-clean-VM E2E harness, the **WingetHandler** (Lane B), and the **crypto owner-only ACL** (Lane E) —
-the last two Windows-only and still `todo!()`. (CI, SECURITY/THREAT_MODEL, a pinned 1.96.0 toolchain,
-the dotfile + script handlers, a wired CLI, and a green build/test on Linux are now in place.) The
-running gap list lives in [FOLLOWUPS.md](./docs/FOLLOWUPS.md) — keep it current.
+clean-VM E2E harness, and the **crypto owner-only ACL** (Lane E) — still `todo!()` on Windows. (CI,
+SECURITY/THREAT_MODEL, a pinned 1.96.0 toolchain, the dotfile + script + **winget** handlers, a wired
+CLI, a green build/test on Linux, and a native msvc `candylane.exe` build are now in place.) Note the
+Windows clippy gate is red (F13). The running gap list lives in
+[FOLLOWUPS.md](./docs/FOLLOWUPS.md) — keep it current.

@@ -6,7 +6,13 @@ this file is the tactical list. Mirror to GitHub Issues after the first push if 
 this stays the source of truth.
 
 **Status key:** 🔴 open · 🟡 partial · ⏸ deferred-by-design
-**Updated:** 2026-06-06 (after the "leave no stone unturned" hardening pass).
+**Updated:** 2026-06-06 (WingetHandler landed + proven on real winget; see Resolved).
+
+> **Host premise corrected (2026-06-06):** the dev box is a Win11 laptop running WSL2 Ubuntu — it
+> **is** a Windows host. winget + a native msvc `cargo build`/`cargo test` of `candylane.exe` both
+> work from the WSL shell (rsync the tree to a `C:` dir first; UNC `\\wsl.localhost\` is blocked in
+> the interop session). So "Windows-gated" items below are now *buildable + testable here*, not
+> blocked on hardware. The Hyper-V loop still needs an elevated shell. (Memory: `windows-build-from-wsl`.)
 
 ---
 
@@ -25,6 +31,20 @@ The hardening pass closed these (all Linux-tractable; verified by `cargo test` �
 - **B-CLI** — `history` (via `StateStore::list_operations`) and `status` (drift check via re-probe) are implemented.
 - **B-LEXICON** — CLI help text + value names use the lexicon (`<BOX>`, jar); README + docs already did.
 - **B-PROFILE** — `profiles/minimal-dev/` shipped (box + sample dotfile + paired up/down scripts).
+- **B-WINGET** — **WingetHandler is real and proven.** Shells `winget.exe` through the
+  `WingetExecutor` seam with `--silent --accept-source-agreements --accept-package-agreements
+  --disable-interactivity`; probe via `winget list --id <pkg> --exact` (truth read from the parsed
+  Id row, NOT the exit code); `best_effort` undo with an ownership guard (`was_present_before` →
+  no-op so we never uninstall a package the user already had); idempotent undo; `synthesize_undo`
+  rebuilds the recipe from the target. **17 fake-driven unit tests pass on both Linux and the msvc
+  target.** Live-validated on real winget (`tests/winget_live.rs`, `#[cfg(windows)]` + `#[ignore]`):
+  read-only probes + a full mutating round-trip (ZoomIt: absent → installed v12.00 → absent),
+  cross-checked against raw `winget list` out-of-band at both ends. Folds in **T14** (winget arg
+  array is a fixed, validated flag set). Still open: recorded PATH-delta cleanup is deferred to
+  C-PATCH (Phase 3 registry machinery) — the undo is artifact-level, as the `best_effort` tag says.
+- **Windows build chain** — rustup + MSVC Build Tools installed; native msvc `cargo build` produces
+  a runnable `candylane.exe` from WSL (rsync→C: recipe). Toolchain is rustc/cargo 1.96.0 (matches
+  the pin). `candylane-crypto` + `windows-acl` compile on the real target for the first time.
 
 ---
 
@@ -33,15 +53,15 @@ The hardening pass closed these (all Linux-tractable; verified by `cargo test` �
 | ID | Sev | Status | Item | Where | Notes |
 |----|-----|--------|------|-------|-------|
 | **F12** | Low | 🟡 | `DotfileHandler::expand()` only handles leading `~` and `$HOME`. `${HOME}`, `%APPDATA%`, `$USERPROFILE`, mid-path vars are unhandled (leading unknown `$VAR` is now *rejected*, so it fails loudly). | `dotfile.rs::expand` | Windows path-var expansion — lands with the Windows work. |
+| **F13** | Med | 🔴 | **`clippy -D warnings` FAILS on the msvc target** — 10 dead-code/unused-import errors in unix-gated test code (`vertical_slice.rs` fixture + imports, `script.rs::tempfile_path` + `Instant`). The whole `vertical_slice.rs` exercises the unix script path but isn't `#[cfg(unix)]`, so on Windows the test fns compile out and orphan their helpers. The Linux-only CI never sees it. | `tests/vertical_slice.rs`, `handlers/script.rs` (test mods) | Mechanical fix: `#[cfg(unix)]` the unix-only test fns/helpers/imports (or gate the whole file). Surfaced when clippy was first run on msvc (now possible — see host-premise note). winget code itself is clean on both targets. |
 
 ---
 
-## B. Phase 1 remaining — Windows-gated (cannot be done without a Windows host)
+## B. Phase 1 remaining — Windows work (buildable + testable from this WSL host; see premise note)
 
 | ID | Status | Item | Where | Notes |
 |----|--------|------|-------|-------|
-| **B-WINGET** | 🔴 | **WingetHandler** (Lane B) — all five trait methods `todo!()`. | `handlers/winget.rs` | Real `WingetExecutor` (`winget.exe` + `--accept-*` `--silent`), probe via `winget list` (success from probe, never exit code), `best_effort` undo + recorded PATH cleanup, ownership check before uninstall. |
-| **B-ACL** | 🔴 | **Crypto owner-only ACL** (Lane E / CRITICAL #3). | `candylane-crypto/src/lib.rs` | Windows `windows-acl` carve-out `todo!()`; unix is a 0600 fallback. Must set + assert owner-only on every load. |
+| **B-ACL** | 🔴 | **Crypto owner-only ACL** (Lane E / CRITICAL #3). | `candylane-crypto/src/lib.rs` | Windows `windows-acl` carve-out `todo!()`; unix is a 0600 fallback. Must set + assert owner-only on every load. (`windows-acl` now compiles on the real target — see Resolved.) |
 | **B-PREFLIGHT** | 🟡 | `preflight()` / `reboot_pending()` real Windows impl. | `engine.rs` | unix cfg-gated to `Ok(())` / `false`. Windows: winget-present check; CBS `RebootPending` + `PendingFileRenameOperations`. |
 | **B-INIT** | 🟡 | `candylane init` — full `~/.candylane/` setup + key ACL. | `candylane-cli/src/main.rs` | Generates the keypair today; the jar dirs are created lazily on first pull/lock. Windows ACL comes with B-ACL. |
 
@@ -70,7 +90,7 @@ The hardening pass closed these (all Linux-tractable; verified by `cargo test` �
 
 | ID | Status | Item | Notes |
 |----|--------|------|-------|
-| **E-T14** | 🟡 | THREAT_MODEL **T14**: winget arg-array validation pending (handler not built). | Folds into **B-WINGET**. Dotfile traversal guard already landed. |
+| **E-T14** | ✅ | THREAT_MODEL **T14**: winget arg-array validation. | Resolved with B-WINGET — the winget arg set is a fixed, hardcoded list of flags + the `--id <pkg> --exact` pair (no shell, no user-interpolated args). Dotfile traversal guard already landed. |
 
 ---
 
