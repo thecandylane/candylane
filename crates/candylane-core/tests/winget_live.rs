@@ -97,17 +97,21 @@ fn install_then_undo_round_trip() {
 
     eprintln!("\n========== WINGET LIVE ROUND-TRIP: {PKG} ==========");
 
-    // Guard: skip (pass) if the package is already present — we must not uninstall a
-    // package the user already had.
+    // Precondition: HARD-FAIL (not skip) if the package is already present. A skip-green
+    // here would false-pass on a dirty machine — and a prior run that died between install
+    // and revert leaves exactly that state. This is an explicitly-invoked `--ignored`
+    // mutating test on a dev/CI box, so a dirty precondition is a real problem to surface,
+    // not to paper over. (Worse than no test: a mutating test that passes green while
+    // leaving the machine dirty.)
     let before = h.probe(&Target(PKG.into())).unwrap();
     eprintln!("[1/4] probe BEFORE      → {}", before.0);
-    if before.0["installed"] == true {
-        eprintln!(
-            "       {PKG} already installed; skipping mutating round-trip to protect user state"
-        );
-        return;
-    }
-    assert_eq!(before.0["installed"], false, "precondition: package absent");
+    assert_eq!(
+        before.0["installed"], false,
+        "PRECONDITION FAILED: {PKG} is already installed at test start. Either a prior run \
+         died between install and revert, or it's genuinely on this machine. This mutating \
+         test refuses to run on a dirty precondition. Clean up with: \
+         winget uninstall --id {PKG} --exact"
+    );
 
     // plan → Some (absent → install)
     let item = Item::Winget { pkg: PKG.into() };
@@ -180,10 +184,11 @@ fn install_then_undo_round_trip() {
 /// Proves winget is WIRED end-to-end — handler + engine + store + logging — not just that
 /// the handler works in isolation.
 ///
-/// Mutating + guarded exactly like `install_then_undo_round_trip`: uses ZoomIt, skips if
-/// already present. Also doubles as the live verification of `PowerShellRebootCheck` (the
-/// pull's preflight calls it for real; if a reboot were genuinely pending the test would
-/// abort with a clear message rather than mislead).
+/// Mutating, with a HARD-FAIL precondition (not a skip): `PKG` must be absent at start. A
+/// skip-green would false-pass on a dirty machine — including the exact state a prior run
+/// leaves if it dies between pull and revert. Also doubles as the live verification of
+/// `PowerShellRebootCheck` (the pull's preflight calls it for real; fail-open means a probe
+/// hiccup proceeds, a genuine CBS/WU pending aborts with a clear message).
 #[test]
 #[ignore = "MUTATES the machine via the engine (installs+reverts ZoomIt); Windows host only"]
 fn engine_pull_then_revert_winget_through_store() {
@@ -194,12 +199,15 @@ fn engine_pull_then_revert_winget_through_store() {
 
     const PKG: &str = "Microsoft.Sysinternals.ZoomIt";
 
-    // Guard: don't touch a package the user already has.
+    // Precondition: HARD-FAIL if already present (a prior run may have died mid-way). A skip
+    // here would false-pass while leaving the machine dirty.
     let guard = WingetHandler::new();
-    if guard.probe(&Target(PKG.into())).unwrap().0["installed"] == true {
-        eprintln!("{PKG} already installed; skipping engine round-trip to protect user state");
-        return;
-    }
+    assert_eq!(
+        guard.probe(&Target(PKG.into())).unwrap().0["installed"],
+        false,
+        "PRECONDITION FAILED: {PKG} is already installed at test start (a prior run may have \
+         died between pull and revert). Clean up with: winget uninstall --id {PKG} --exact"
+    );
 
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = tmp.path().join("state.db");

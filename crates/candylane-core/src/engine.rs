@@ -13,7 +13,7 @@
 //! fake to exercise the abort path. See `crate::reboot`.
 
 use crate::handler::Handler;
-use crate::reboot::RebootCheck;
+use crate::reboot::{RebootCheck, RebootState};
 use crate::store::{NewAction, StateStore};
 use crate::types::*;
 use crate::Result;
@@ -124,8 +124,10 @@ impl<'a> Engine<'a> {
                                 .set_action_applied(aid, &applied.after, &applied.undo)?;
                             // A package may have set reboot-pending. If so, abort before it
                             // poisons the next install (Finding #5). The action is already
-                            // recorded applied, so rollback can undo it.
-                            if self.reboot_pending()? {
+                            // recorded applied, so rollback can undo it. (Unreadable probe
+                            // fails open — see reboot_state_lenient — so this never aborts a
+                            // pull on a transient PowerShell hiccup.)
+                            if self.reboot_pending() {
                                 self.rollback(op)?;
                                 self.finalize_op(op)?;
                                 anyhow::bail!(
@@ -328,16 +330,45 @@ impl<'a> Engine<'a> {
 
     // ---- leaves --------------------------------------------------------------
 
+    /// Read the reboot gate **leniently** — the policy for an *unreadable* probe.
+    ///
+    /// `RebootCheck::state()` can fail (PowerShell spawn glitch, parse hiccup). That is a
+    /// *probe* failure, NOT evidence of a pending reboot, and the two must never be
+    /// conflated: on the 10x acceptance loop a transient probe error would otherwise read
+    /// as a Candylane break. Policy = **fail-open with a loud advisory** (Decision #9):
+    /// an unknown state proceeds (returns all-clear) after shouting to stderr. The narrow
+    /// risk — a reboot genuinely pending *and* the probe failing at the same instant — is
+    /// the case Candylane's rollback already covers, and is near-impossible on the clean
+    /// VMs the loop targets. Breaking the loop on a flaky probe is the worse outcome.
+    ///
+    /// (The advisory is an `eprintln` for now; persisting "reboot state unknown" to the op
+    /// log is tracked as F14.)
+    fn reboot_state_lenient(&self) -> RebootState {
+        match self.reboot_check.state() {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!(
+                    "candylane: WARNING — could not read reboot-pending state ({e:#}); \
+                     proceeding (fail-open). If a reboot really is pending, an install may \
+                     need a retry."
+                );
+                RebootState::default() // all-clear ⇒ does not abort
+            }
+        }
+    }
+
     /// Abort before we start if a reboot is already pending (CRITICAL #5: a pending
-    /// reboot poisons the next install). Delegates to the injected [`RebootCheck`]; the
-    /// gate is CBS∨WU (see [`RebootState::must_abort`]). PendingFileRenameOperations is
-    /// advisory only — it is True on healthy machines (installers queue file renames as
-    /// normal work), so gating on it would refuse pulls on most real systems.
+    /// reboot poisons the next install). The gate is CBS∨WU (see [`RebootState::must_abort`]).
+    /// PendingFileRenameOperations is advisory only — it is True on healthy machines
+    /// (installers queue file renames as normal work), so gating on it would refuse pulls on
+    /// most real systems. An unreadable probe fails open (see [`reboot_state_lenient`]).
     ///
     /// Spec note: PHASE1_ARCHITECTURE said "reboot-pending → abort"; this defines
-    /// reboot-pending as CBS∨WU with PFRO advisory (FOLLOWUPS, locked decisions).
+    /// reboot-pending as CBS∨WU with PFRO advisory (Decision #9).
+    ///
+    /// [`reboot_state_lenient`]: Self::reboot_state_lenient
     fn preflight(&self) -> Result<()> {
-        let state = self.reboot_check.state()?;
+        let state = self.reboot_state_lenient();
         if state.must_abort() {
             anyhow::bail!(
                 "a system reboot is already pending ({}) — reboot, then run the pull",
@@ -349,10 +380,11 @@ impl<'a> Engine<'a> {
 
     /// Mid-pull reboot gate: after an install, did Windows servicing flip a reboot
     /// requirement that would poison the next install? Same CBS∨WU predicate as
-    /// [`preflight`] (single source of truth — they must not drift). PFRO is NOT consulted
-    /// here: a winget install legitimately queues file renames, so PFRO trips *because the
-    /// pull is working* — gating on it would roll back pull #1 of a healthy run.
-    fn reboot_pending(&self) -> Result<bool> {
-        Ok(self.reboot_check.state()?.must_abort())
+    /// [`preflight`] (single source of truth — they must not drift), same fail-open policy
+    /// for an unreadable probe. PFRO is NOT consulted here: a winget install legitimately
+    /// queues file renames, so PFRO trips *because the pull is working* — gating on it would
+    /// roll back pull #1 of a healthy run.
+    fn reboot_pending(&self) -> bool {
+        self.reboot_state_lenient().must_abort()
     }
 }
