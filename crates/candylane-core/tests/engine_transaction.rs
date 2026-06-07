@@ -689,6 +689,36 @@ fn pull_proceeds_when_only_pfro_pending() {
     );
 }
 
+/// A `RebootCheck` that always errors — models a PowerShell spawn/parse failure.
+struct ErroringRebootCheck;
+impl RebootCheck for ErroringRebootCheck {
+    fn state(&self) -> Result<RebootState> {
+        anyhow::bail!("simulated powershell probe failure")
+    }
+}
+
+/// **Fail-open policy (Decision #9):** an *unreadable* reboot probe must NOT abort the pull
+/// — a probe failure is not evidence of a pending reboot, and conflating them would break
+/// the 10x acceptance loop on a transient hiccup. The pull proceeds (the engine logs a loud
+/// advisory to stderr); it does NOT surface the probe error as a pull failure.
+#[test]
+fn pull_proceeds_when_reboot_probe_errors() {
+    let handler = FakeHandler::new(HandlerKind::Winget);
+    let registry = FakeRegistry::new(&handler);
+    let mut store = FakeStore::new();
+    let profile = winget_profile(&["pkg-a", "pkg-b"]);
+
+    make_engine_with_reboot(&mut store, &registry, &ErroringRebootCheck)
+        .pull(&profile)
+        .expect("an unreadable reboot probe must fail OPEN — the pull proceeds");
+
+    assert_eq!(
+        store.op(1).unwrap().status,
+        OpStatus::Applied,
+        "pull should complete despite the reboot probe erroring (fail-open)"
+    );
+}
+
 // ============================================================================
 // Test 3 — recover_reconciles_in_flight
 // ============================================================================

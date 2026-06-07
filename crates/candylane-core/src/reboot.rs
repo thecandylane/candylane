@@ -121,9 +121,22 @@ $wu  = Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUp
 $sm  = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue;
 Write-Output $cbs; Write-Output $wu; Write-Output ($null -ne $sm)";
 
+    /// Absolute path to `powershell.exe` via `%SystemRoot%`, so a stripped / locked-down PATH
+    /// on a fresh VM can't hide it (load-bearing for the acceptance loop). Falls back to the
+    /// bare name if `SystemRoot` is somehow unset; an outright-missing PowerShell then surfaces
+    /// as a spawn error, which the engine treats as fail-open (does not break the pull).
+    fn powershell_path() -> std::path::PathBuf {
+        match std::env::var("SystemRoot") {
+            Ok(root) => {
+                std::path::Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+            }
+            Err(_) => std::path::PathBuf::from("powershell"),
+        }
+    }
+
     impl RebootCheck for PowerShellRebootCheck {
         fn state(&self) -> Result<RebootState> {
-            let out = Command::new("powershell")
+            let out = Command::new(powershell_path())
                 .args(["-NoProfile", "-NonInteractive", "-Command", PROBE_SCRIPT])
                 .output()
                 .context("failed to spawn powershell for reboot-pending check")?;
