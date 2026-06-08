@@ -17,11 +17,13 @@ Read before non-trivial work:
 - [VOCABULARY.md](./docs/VOCABULARY.md) — the sweet-shop lexicon (box ⊃ tin ⊃ biscuit, lanes, jar, chimney). User-facing names ↔ code names.
 
 ## Current state
-Pre-alpha. **Phase 1 — the keystone. The cross-platform half of the vertical slice is built and
-proven on Linux; WingetHandler is now real and proven on live winget.** `cargo test` **72 green**,
-`clippy -D warnings` + `fmt` clean on Rust 1.96.0 (Linux). The dev box is a Win11 laptop w/ WSL2 —
-it **is** a Windows host: winget + a native msvc `cargo build` of `candylane.exe` run from WSL
-(rsync→`C:` first; UNC blocked). Windows clippy gate is currently red (F13, unix-gated test cfg).
+Pre-alpha. **Phase 1 — the keystone. The cross-platform half is built and proven on Linux;
+WingetHandler is real and proven on live winget, wired end-to-end through the engine + store.**
+**79 tests green on Linux / 70 on msvc**, `clippy -D warnings` (`--all-targets`) + `fmt` clean on
+**both** targets, Rust 1.96.0. The dev box is a Win11 laptop w/ WSL2 — it **is** a Windows host:
+winget + a native msvc `cargo build` of `candylane.exe` run from WSL (rsync→`C:` first; UNC blocked).
+CI (GitHub Actions) gates Linux + Windows-msvc lint/test + a cargo-audit/deny security job; green
+after fixing the toolchain-input + cargo-deny advisory bugs. (F13 — msvc clippy — resolved.)
 
 Built + tested end-to-end (real I/O, no fakes): `candylane pull` → `revert` against a dotfile +
 script profile — [tests/vertical_slice.rs](./crates/candylane-core/tests/vertical_slice.rs) proves
@@ -38,11 +40,13 @@ recorded crash-recovery (`recover` logs an `OpKind::Recover` audit op). **Winget
 real: shells `winget.exe` through the `WingetExecutor` seam, reads truth from `winget list` (never
 the exit code), `best_effort` undo with an ownership guard, 17 fake-driven unit tests green on Linux
 **and** msvc, plus a live `#[cfg(windows)]` round-trip (`tests/winget_live.rs`: absent → installed →
-absent, cross-checked vs raw winget). Still stubbed / Windows-only: the **crypto owner-only ACL**
-(Lane E / CRITICAL #3 — `windows-acl` carve-out `todo!()`; unix is a 0600 fallback), and engine
-`preflight`/`reboot_pending` (Windows real impl `todo!()`; unix cfg-gated to no-op). The keystone
-**Hyper-V 10x clean-VM loop is not built** — the Linux half is proven, the Windows acceptance bar is
-not. **All known gaps + review follow-ups are tracked in [FOLLOWUPS.md](./docs/FOLLOWUPS.md).**
+absent, cross-checked vs raw winget). Engine `preflight`/`reboot_pending` are **real** behind the
+injectable `RebootCheck` seam ([reboot.rs](./crates/candylane-core/src/reboot.rs)): CBS∨WU is the
+hard gate, PendingFileRenameOperations is advisory, an unreadable probe fails open (Decision #9).
+The one remaining `todo!()` in the trust model: the **crypto owner-only ACL** (Lane E / CRITICAL #3 —
+`windows-acl` carve-out; unix is a 0600 fallback) — DPAPI-vs-ACL is under research before it lands.
+The keystone **Hyper-V 10x clean-VM loop is not built** — the Linux half is proven, the Windows
+acceptance bar is not. **All known gaps + review follow-ups are tracked in [FOLLOWUPS.md](./docs/FOLLOWUPS.md).**
 
 ## The prime directive
 Phase 1 must be **surgical**. The acceptance bar, non-negotiable:
@@ -145,8 +149,8 @@ Theme nouns in UX/docs; keep verbs and security primitives plain in code and CLI
 
 ## Not yet wired (don't assume)
 The distribution pipeline (GitHub Releases + signed installer, rustup-init model), the Hyper-V
-clean-VM E2E harness, and the **crypto owner-only ACL** (Lane E) — still `todo!()` on Windows. (CI,
-SECURITY/THREAT_MODEL, a pinned 1.96.0 toolchain, the dotfile + script + **winget** handlers, a wired
-CLI, a green build/test on Linux, and a native msvc `candylane.exe` build are now in place.) Note the
-Windows clippy gate is red (F13). The running gap list lives in
-[FOLLOWUPS.md](./docs/FOLLOWUPS.md) — keep it current.
+clean-VM E2E harness, and the **crypto owner-only ACL** (Lane E) — still `todo!()` on Windows. (CI
+with Linux + Windows-msvc lint/test + a cargo-audit/deny job, SECURITY/THREAT_MODEL, a pinned 1.96.0
+toolchain, the dotfile + script + **winget** handlers, the reboot-pending seam, a wired CLI, and a
+native msvc `candylane.exe` build are all in place; clippy `-D warnings --all-targets` + tests green
+on both targets.) The running gap list lives in [FOLLOWUPS.md](./docs/FOLLOWUPS.md) — keep it current.

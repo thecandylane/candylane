@@ -18,12 +18,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # rust-toolchain.toml is the single source of truth for the pinned version.
+      # dtolnay/rust-toolchain does NOT read it (the `toolchain` input is *required* —
+      # omitting it is what was failing CI), so we read the channel from the file and
+      # pass it through. No version duplicated in this workflow → no drift.
+      - name: Read pinned toolchain
+        id: toolchain
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        # SHA-pinned (dtolnay ships no version tags) — no floating @master in the build.
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          # Honors the channel/components/targets in rust-toolchain.toml at repo root.
-          # dtolnay/rust-toolchain reads rust-toolchain.toml automatically when no
-          # explicit `toolchain` input is given, so we just omit it.
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           components: rustfmt, clippy
 
       - name: Cache dependencies
@@ -32,28 +40,46 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+      # --all-targets so tests/examples are linted too. Without it, test-only lints slip
+      # through (this is the gap that let F13 hide from CI).
+      - name: Clippy (all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Tests (unit + engine_transaction integration)
+      # #[ignore] tests (the live winget / ACL paths that mutate the machine or hit the
+      # network) are NOT run by `cargo test` — they never execute in CI, by design.
+      - name: Tests (unit + integration)
         run: cargo test --workspace
 
-  integration_windows:
-    name: Integration Tests (Windows / MSVC)
+  lint_test_windows:
+    name: Lint & Test (Windows / MSVC)
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Read pinned toolchain
+        id: toolchain
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           targets: x86_64-pc-windows-msvc
+          components: clippy
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Tests (all, including cfg(windows) ACL / real-winget paths)
+      # Enforce the msvc clippy gate in CI (this is the F13 check that previously only ran
+      # by hand via the rsync→C: build). The shipping target must pass -D warnings too.
+      - name: Clippy (msvc, all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Compiles + runs every cfg(windows) path on the real target (winget fake-driven
+      # unit tests, reboot seam, engine_transaction). #[ignore] live tests are NOT run.
+      - name: Tests (all)
         run: cargo test --workspace
 
   audit:
@@ -68,8 +94,13 @@ jobs:
         with:
           tool: cargo-audit,cargo-deny
 
+      # Fails on known security vulnerabilities (RUSTSEC). Unmaintained advisories are
+      # handled by cargo-deny below (audit reports them as warnings only).
       - name: Run cargo-audit
         run: cargo audit
 
+      # Advisories + licenses + bans + sources, per deny.toml. Vulnerabilities are a hard
+      # fail; specific accepted unmaintained advisories are listed (with justification) in
+      # deny.toml's ignore — so a real future vuln still breaks the build.
       - name: Run cargo-deny
         run: cargo deny check

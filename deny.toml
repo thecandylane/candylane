@@ -3,8 +3,16 @@
 
 [advisories]
 version = 2
-# RUSTSEC advisory DB. Fail on vulnerabilities; tune `ignore` with justification only.
-ignore = []
+# RUSTSEC advisory DB. Vulnerabilities are a hard fail. `unmaintained` advisories also fail
+# by default in cargo-deny v2; we ignore SPECIFIC ones (with justification) — never a blanket
+# downgrade — so a real future vulnerability still breaks the build.
+ignore = [
+    # number_prefix is unmaintained, NOT vulnerable — a tiny number-formatting helper pulled
+    # transitively by indicatif (progress bars) → candylane-cli. No safe upgrade exists until
+    # indicatif migrates to `unit-prefix` upstream; we don't depend on it directly. Revisit
+    # when indicatif updates. https://rustsec.org/advisories/RUSTSEC-2025-0119
+    "RUSTSEC-2025-0119",
+]
 
 [licenses]
 version = 2
@@ -24,6 +32,9 @@ allow = [
     "CC0-1.0",
 ]
 confidence-threshold = 0.8
+# These allowances are forward-looking (deps may pull them later); don't warn when an
+# allowed license isn't currently present in the tree.
+unused-allowed-license = "allow"
 
 [bans]
 # Duplicate versions are a smell, not a failure, in a young tree. Revisit before 1.0.
