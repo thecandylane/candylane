@@ -262,6 +262,7 @@ fn assert_owner_only(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use super::*;
 
     #[test]
