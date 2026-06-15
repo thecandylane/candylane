@@ -1,0 +1,13 @@
+This PC was cleaned and prepared using Candylane refurb-clean profile.
+
+All personal accounts, data, OEM bloat, and consumer telemetry have been removed
+to the best of the tool's ability. A small set of universally useful applications
+(Chrome, 7-Zip, Notepad++, VLC) were installed from winget.
+
+Hostname was standardized for your batch.
+
+If anything looks wrong or you need a different baseline, re-run the profile
+or contact the person who maintains the candylane box definition.
+
+Tool: https://github.com/thecandylane/candylane
+Profile: refurb-clean

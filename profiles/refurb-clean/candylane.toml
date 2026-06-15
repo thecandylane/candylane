@@ -1,0 +1,73 @@
+# profiles/refurb-clean/candylane.toml
+#
+# "refurb-clean" — one-command clean for old/dirty Windows All-in-One PCs
+# after a reset or fresh Windows install. Goal: data-free, bloat-free,
+# functional machine ready for resale, donation, or redeployment.
+#
+# === Current job constraints (edit these for your batch) ===
+# - Debloat level: Moderate-to-aggressive on telemetry/OEM/consumer bloat.
+#   (Implemented via script for now; Phase 3 debloat engine will make this
+#    data-driven + more reversible later.)
+# - Apps to INCLUDE (winget): Chrome (browser), 7-Zip (archiver),
+#   Notepad++ (editor), VLC (media). These are near-universal and low-risk.
+#   Add RustDesk / TeamViewer / AnyDesk only if you need remote handoff.
+# - Apps to EXCLUDE: All OEM preinstalls, Microsoft consumer bloat
+#   (OneDrive, Copilot, Xbox, Candy Crush, etc.), trialware, games.
+# - Hostname pattern: AIO-REFURB-<last4-of-bios-serial>
+#   Falls back to AIO-REFURB-XXXX if serial unreadable.
+# - Other: 
+#   * Remove leftover user profiles (keep only default + current admin).
+#   * Aggressive but safe temp / Windows.old / update cache cleanup.
+#   * Disable key telemetry services (best-effort).
+#   * Firewall on for all profiles.
+#   * Power plan = Balanced.
+#   * Drop a "This machine was cleaned with Candylane refurb-clean" marker
+#     on the Public Desktop with the hostname and timestamp.
+# - Reversibility: Many steps are inherently one_way or best_effort
+#   (you cannot perfectly "un-clean" a machine you just wiped of personal data).
+#   diff and history will clearly tag them. Undo script is best-effort only
+#   (re-enable a couple services, remove marker). Primary use is forward-only.
+# - Usage on a target machine (after OOBE / "Reset this PC" / clean install):
+#     candylane pull profiles/refurb-clean/candylane.toml
+#   (or from a .candy bundle on USB when Phase 7 lands).
+# - Test first: Always run `candylane diff ...` on a representative dirty
+#   machine before the first real pull of the day.
+#
+# Once .candy bundles exist, this profile + the candylane.exe itself becomes
+# a self-contained "USB drop" for field work with zero network.
+#
+# Future: this will become a reusable "tin" / biscuit that other people
+# (contractors, small studios, homelabbers, refurb shops) can extend with
+# their own overlays (e.g. "refurb-clean + customer-kiosk" or "refurb-clean + dev-tools").
+
+name    = "refurb-clean"
+version = "0.1-job"
+
+[packages.winget]
+install = [
+  "Google.Chrome",
+  "7zip.7zip",
+  "Notepad++.Notepad++",
+  "VideoLAN.VLC",
+  # "RustDesk.RustDesk",     # remote support — uncomment if your workflow needs it
+  # "Microsoft.VCRedist.2015+.x64",  # common compatibility on old hardware
+  # "Microsoft.VCRedist.2015+.x86",
+]
+
+[dotfiles]
+# Static note (always the same). Complements the dynamic hostname+timestamp
+# marker that the cleanup script writes to the same Public Desktop.
+[[dotfiles.file]]
+src    = "./assets/REFURB-NOTE.txt"
+target = "$PUBLIC/Desktop/CANDYLANE-REFURB-MARKER.txt"
+
+# We also create a richer dynamic marker (with the actual final hostname)
+# inside cleanup.ps1. Both are useful for the next owner / your records.
+
+[[post_install]]
+run  = "./scripts/cleanup.ps1"
+# undo = "./scripts/cleanup.undo.ps1"   # best-effort only; see comments in the script
+# Many real clean steps (profile removal, deep temp wipe, service disables)
+# are one_way or best_effort by design. The undo mainly re-enables services
+# we explicitly touched and removes our marker so a mistaken revert doesn't
+# leave the machine in a weird half-clean state.
