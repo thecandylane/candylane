@@ -148,7 +148,7 @@ fn dirs_home() -> Option<PathBuf> {
 #[cfg(windows)]
 fn protect_key(plaintext: &[u8]) -> Result<Vec<u8>> {
     use windows::Win32::Security::Cryptography::{
-        CryptProtectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+        CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
 
     let data_in = CRYPT_INTEGER_BLOB {
@@ -168,7 +168,8 @@ fn protect_key(plaintext: &[u8]) -> Result<Vec<u8>> {
             &mut data_out,
         )?;
 
-        let protected = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize).to_vec();
+        let protected =
+            std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize).to_vec();
 
         // DPAPI allocated with LocalAlloc; we must free it.
         let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
@@ -182,7 +183,7 @@ fn protect_key(plaintext: &[u8]) -> Result<Vec<u8>> {
 #[cfg(windows)]
 fn unprotect_key(protected: &[u8]) -> Result<Vec<u8>> {
     use windows::Win32::Security::Cryptography::{
-        CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
 
     let data_in = CRYPT_INTEGER_BLOB {
@@ -202,7 +203,8 @@ fn unprotect_key(protected: &[u8]) -> Result<Vec<u8>> {
             &mut data_out,
         )?;
 
-        let plaintext = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize).to_vec();
+        let plaintext =
+            std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize).to_vec();
 
         let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
             data_out.pbData as _,
@@ -218,7 +220,7 @@ fn unprotect_key(protected: &[u8]) -> Result<Vec<u8>> {
 #[cfg(windows)]
 fn enforce_owner_only(_path: &Path) -> Result<()> {
     // DPAPI is the primary protection (the bytes are ciphertext and only
-    // decrypt for this user on this profile). 
+    // decrypt for this user on this profile).
     // We intentionally keep the Windows enforce/assert as no-ops for now
     // to avoid re-introducing the heavy ACL machinery.
     // The file lives inside the user's profile directory, which on a normal
