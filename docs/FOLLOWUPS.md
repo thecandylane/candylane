@@ -88,7 +88,7 @@ The hardening pass closed these (all Linux-tractable; verified by `cargo test` �
 
 | ID | Status | Item | Where | Notes |
 |----|--------|------|-------|-------|
-| **B-ACL** | 🔴 | **Crypto owner-only ACL** (Lane E / CRITICAL #3). | `candylane-crypto/src/lib.rs` | Windows `windows-acl` carve-out `todo!()`; unix is a 0600 fallback. Must set + assert owner-only on every load. (`windows-acl` now compiles on the real target — see Resolved.) |
+| **B-ACL** | 🟡 | Crypto key protection (DPAPI) | `candylane-crypto/src/lib.rs` | Decision locked + DPAPI wired (protect/unprotect, fatal on unprotect failure, zeroize added, Foundation feature). Windows msvc build not yet verified in this session (run native). No owner-grant defense-in-depth implemented yet (DPAPI is primary; claims updated). Windows roundtrip test stub needed. See B-ACL_APPROACH.md (superseded) and portability clarification. |
 | **B-PREFLIGHT2** | Low 🟡 | `preflight()` does the reboot gate (done) but not an explicit winget-present check. | `engine.rs` | A missing `winget.exe` already surfaces as a clear errored action (WingetHandler shells `Command::new("winget")` with context), so this is "fail earlier/clearer," not a correctness gap. Add a cheap `where winget` / version probe to preflight when convenient. |
 | **B-INIT** | 🟡 | `candylane init` — full `~/.candylane/` setup + key ACL. | `candylane-cli/src/main.rs` | Generates the keypair today; the jar dirs are created lazily on first pull/lock. Windows ACL comes with B-ACL. |
 

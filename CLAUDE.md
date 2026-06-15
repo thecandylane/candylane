@@ -43,8 +43,7 @@ the exit code), `best_effort` undo with an ownership guard, 17 fake-driven unit 
 absent, cross-checked vs raw winget). Engine `preflight`/`reboot_pending` are **real** behind the
 injectable `RebootCheck` seam ([reboot.rs](./crates/candylane-core/src/reboot.rs)): CBS∨WU is the
 hard gate, PendingFileRenameOperations is advisory, an unreadable probe fails open (Decision #9).
-The one remaining `todo!()` in the trust model: the **crypto owner-only ACL** (Lane E / CRITICAL #3 —
-`windows-acl` carve-out; unix is a 0600 fallback) — DPAPI-vs-ACL is under research before it lands.
+Crypto key protection decided: **DPAPI (user-scope) primary** on Windows for `~/.candylane/identity.key` (the file on disk is ciphertext; successful CryptUnprotectData is the assertion). Owner-only grant on the ciphertext file is a possible future defense-in-depth (not yet implemented). Unix 0600 fallback. The heavy B-ACL enumeration / drift-refuse / repair-valve machinery is retired (see updated B-ACL_APPROACH.md). Product call: author-machine-bound identity (private key stays on the laptop that authors/signs the .candy; bundles travel separately). Explicit export/re-wrap in Phase 5 for the "laptop died, want same identity" case. This satisfies CRITICAL #3 with stronger copied-file protection and far less security-critical code.
 The keystone **Hyper-V 10x clean-VM loop is not built** — the Linux half is proven, the Windows
 acceptance bar is not. **All known gaps + review follow-ups are tracked in [FOLLOWUPS.md](./docs/FOLLOWUPS.md).**
 
@@ -65,7 +64,7 @@ Compute a plan, execute action-by-action, record an undo recipe per action. Reve
 recipes in reverse. **Success is read from `probe()`, never from a subprocess exit code.**
 
 3 crates: `candylane-cli` (clap), `candylane-core` (engine + `Handler` trait + handlers + profile),
-`candylane-crypto` (Ed25519 + owner-only ACL — the one `windows-rs` carve-out).
+`candylane-crypto` (Ed25519 + DPAPI-protected identity key on Windows — the one `windows-rs` carve-out for CryptProtectData/UnprotectData).
 
 Keystone code: [engine.rs](./crates/candylane-core/src/engine.rs) — `reconcile()` → `rollback()` →
 `finalize_op()`. Treat it as load-bearing; it encodes the bugs three reviewers found. Full detail
@@ -74,7 +73,7 @@ in [PHASE1_ARCHITECTURE.md](./docs/PHASE1_ARCHITECTURE.md).
 ### The CRITICALs (always designed in, never discovered)
 1. **Script timeout** — `ScriptHandler` kills the child on `ApplyCtx.timeout`.
 2. **Restore integrity** — `DotfileHandler::undo` sha256-verifies the backup before writing; mismatch refuses.
-3. **Key perms** — `candylane-crypto` sets + asserts owner-only ACL on every load. Not best-effort.
+3. **Key perms** — `candylane-crypto` protects the private Ed25519 key with DPAPI (user-scope) on Windows so only the owner can read it (ciphertext at rest; unprotect success is the load assertion). Unix 0600 fallback. Not best-effort.
 4. **Crash reconcile** — `recover` probes the in-flight action before rollback (no stranded packages).
 5. **Bounded rollback** — a failing `undo` is capped, marked `undo_failed`, rollback continues. Never an infinite loop.
 
@@ -86,8 +85,8 @@ cargo fmt --all
 cargo build --release                        # produces candylane.exe (windows-msvc)
 ```
 Toolchain pinned in [rust-toolchain.toml](./rust-toolchain.toml) — bump deliberately, never float.
-Some code is Windows-only (`candylane-crypto` ACL, winget subprocess). Off-Windows, the
-`WingetExecutor` seam + a unix perms fallback keep `candylane-core` building and unit-testable.
+Some code is Windows-only (`candylane-crypto` DPAPI, winget subprocess). Off-Windows, the
+`WingetExecutor` seam + a unix perms fallback keep `candylane-core` building and unit-testable. The DPAPI path is the only remaining `windows` crate usage in the workspace (confined to the crypto crate).
 
 ## Testing
 Framework: **Rust built-in test harness (`cargo test`)**.

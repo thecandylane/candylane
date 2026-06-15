@@ -10,7 +10,12 @@ anyhow.workspace = true
 thiserror.workspace = true
 ed25519-dalek.workspace = true
 rand.workspace = true
+zeroize = "1.8"
 
-# windows-rs carve-out (Decision #8): owner-only ACL set+assert lives ONLY in this crate.
+# DPAPI (user-scope) primary protection for the private Ed25519 identity key on Windows.
+# The on-disk bytes are ciphertext. Successful unprotect on load is the assertion.
+# No owner-only file grant is implemented yet; DPAPI is the sole protection in force.
+# A cheap owner grant (no heavy DACL enumeration) is a possible future defense-in-depth.
+# See B-ACL_APPROACH.md (superseded) and the portability clarification (author-machine-bound key).
 [target.'cfg(windows)'.dependencies]
-windows-acl = "0.3"
+windows = { version = "0.58", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
